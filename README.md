@@ -1,0 +1,2 @@
+# Freemind CLI
+
