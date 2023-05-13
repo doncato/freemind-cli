@@ -1,8 +1,17 @@
 [package]
 name = "freemind-cli"
+authors = ["doncato <doncato@notarobot.cyou>"]
+description = "CLI Application working as a client with the Freemind API Server"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+confy = "0.5"
+clap = { version = "4", features = ["cargo"] }
+dialoguer = { version = "0.10", features = ["fuzzy-select", "completion"] }
+quick-xml = { version = "0.27", features = ["async-tokio"] }
+reqwest = "0.11"
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
