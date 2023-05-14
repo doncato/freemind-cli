@@ -1,5 +1,6 @@
+#[macro_use] extern crate prettytable;
 use confy;
-use data_types::{AppConfig, AppCommand};
+use data_types::{AppState, AppConfig, AppCommand};
 use std::fs;
 use std::io;
 use clap::{Arg, Command, ArgMatches, crate_authors, crate_description, crate_version, ArgAction};
@@ -9,14 +10,67 @@ use crate::data_types::AuthMethod;
 
 pub(crate) mod data_types {
     use std::fmt;
+    use chrono::{TimeZone, Utc, LocalResult};
+    use prettytable::{Table, Row};
     use serde::{Serialize, Deserialize};
     
+    #[derive(Serialize, Deserialize)]
+    pub struct AppElement {
+        id: Option<u16>,
+        title: String,
+        description: String,
+        due: Option<u32>,
+    }
 
-    //#[derive(Debug, EnumIter)]
+    impl AppElement {
+        fn to_row(&self) -> Row {
+            let due_timestamp: i64 = self.due.unwrap_or(u32::MAX).into();
+            let utc_due: String = match Utc.timestamp_opt(due_timestamp, 0) {
+                LocalResult::None => "None".to_string(),
+                LocalResult::Single(val) => val.to_rfc2822(),
+                LocalResult::Ambiguous(val, _) => val.to_rfc2822(),
+            };
+            //let offset = Local::now().offset();
+            row![
+                format!("{:?}", self.id),
+                self.title,
+                self.description,
+                utc_due,
+            ]
+        }
+    }
+
+    pub struct AppState {
+        config: AppConfig,
+        elements: Vec<AppElement>,
+        synced: bool,
+    }
+
+    impl AppState {
+        pub fn new(config: AppConfig) -> Self {
+            Self {
+                config,
+                elements: Vec::new(),
+                synced: false,
+            }
+        }
+        pub fn list(&self) {
+            let mut table = Table::new();
+            table.set_titles(row!["ID", "Title", "Description", "Due"]);
+            self.elements.iter().map(|e| table.add_row(e.to_row()));
+        }
+
+        pub fn sync(&self) {
+
+        }
+    }
+
+    #[derive(PartialEq,)]
     pub enum AppCommand {
         List,
         Sync,
         Filter,
+        Edit,
         Add,
         Remove,
         Help,
@@ -26,13 +80,14 @@ pub(crate) mod data_types {
     impl ToString for AppCommand {
         fn to_string(&self) -> String {
             match self {
-                List => "list",
-                Sync => "sync",
-                Filter => "filter",
-                Add => "add",
-                Remove => "remove",
-                Help => "help",
-                Quit => "quit",
+                Self::List => "list",
+                Self::Sync => "sync",
+                Self::Filter => "filter",
+                Self::Edit => "edit",
+                Self::Add => "add",
+                Self::Remove => "remove",
+                Self::Help => "help",
+                Self::Quit => "quit",
             }.to_string()
         }
     }
@@ -43,16 +98,20 @@ pub(crate) mod data_types {
                 0 => Self::List,
                 1 => Self::Sync,
                 2 => Self::Filter,
-                3 => Self::Add,
-                4 => Self::Remove,
-                5 => Self::Help,
-                6 => Self::Quit,
+                3 => Self::Edit,
+                4 => Self::Add,
+                5 => Self::Remove,
+                6 => Self::Help,
+                7 => Self::Quit,
                 _ => Self::List
             }
         }
     }
 
     impl AppCommand {
+        pub fn is_quit(&self) -> bool {
+            &Self::Quit == self
+        }
         pub fn get_command_list() -> Vec<AppCommand> {
             vec![
                 Self::List,
@@ -154,17 +213,20 @@ pub(crate) mod data_types {
     }
 }
 
+/// Read the app configuration
 fn obtain_app_config() -> Option<AppConfig> {
     fs::create_dir_all("~/.config/freemind").ok();
     confy::load_path("~/.config/freemind/freemind-cli.config").ok()
 }
 
+/// Save the app configuration
 fn write_app_config(config: &AppConfig) -> Option<()> {
     fs::create_dir_all("~/.config/freemind").ok();
     confy::store_path("~/.config/freemind/freemind-cli.config", config).ok();
     Some(())
 }
 
+/// Configuration Setup Dialog
 fn setup_config(prev_config: &AppConfig) -> Result<AppConfig, std::io::Error> {
     println!("\n   ### Config Setup: ###\n");
     let server_address: String = Input::new()
@@ -209,14 +271,38 @@ fn setup_config(prev_config: &AppConfig) -> Result<AppConfig, std::io::Error> {
 
 }
 
-fn main_menu(config: AppConfig) -> Result<(), io::Error> {
-    let commands: Vec<AppCommand> = AppCommand::get_command_list();
-    let selction: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
-        .items(&commands)
-        .default(0)
-        .interact_on_opt(&Term::stderr())?.unwrap_or(0);
 
-    let selected_command: AppCommand = AppCommand::from(selction);
+fn filter_menu()
+
+/// Help dialog (more a print but who cares)
+fn help_menu() {
+    println!("This is the Freemind Command Line Client");
+    println!("You can perform different actions on your calendar and sync them");
+    println!("with the Freemind API");
+}
+
+/// Main Dialog
+fn main_menu(config: AppConfig) -> Result<(), io::Error> {
+    let mut state = AppState::new(config);
+    let commands: Vec<AppCommand> = AppCommand::get_command_list();
+    loop {
+        let selction: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
+            .with_prompt("Choose what you want to do")
+            .items(&commands)
+            .default(0)
+            .interact_on_opt(&Term::stderr())?.unwrap_or(0);
+    
+        match AppCommand::from(selction) {
+                AppCommand::List => state.list(),
+                AppCommand::Sync => state.sync(),
+                AppCommand::Filter => filter_menu(),
+                AppCommand::Edit => edit_menu(),
+                AppCommand::Add => add_menu(),
+                AppCommand::Remove => remove_menu(),
+                AppCommand::Help => help_menu(),
+                AppCommand::Quit => break,
+            }
+    }
     Ok(())
 }
 
