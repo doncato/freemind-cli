@@ -3,6 +3,7 @@ use confy;
 use data_types::{AppState, AppConfig, AppCommand, AppElement};
 use std::fs;
 use std::io;
+use std::path::PathBuf;
 use clap::{Arg, Command, ArgMatches, crate_authors, crate_description, crate_version, ArgAction};
 use dialoguer::{Input, Confirm, Password, FuzzySelect, Select, theme::ColorfulTheme, console::Term};
 
@@ -351,14 +352,20 @@ pub(crate) mod data_types {
 
 /// Read the app configuration
 fn obtain_app_config() -> Option<AppConfig> {
-    fs::create_dir_all("~/.config/freemind").ok();
-    confy::load_path("~/.config/freemind/freemind-cli.config").ok()
+    let mut path = dirs::config_dir().unwrap_or(PathBuf::new());
+    path.push("freemind/");
+    fs::create_dir_all(path.clone()).ok();
+    path.push("freemind-cli.config");
+    confy::load_path(path).ok()
 }
 
 /// Save the app configuration
 fn write_app_config(config: &AppConfig) -> Option<()> {
-    fs::create_dir_all("~/.config/freemind").ok();
-    confy::store_path("~/.config/freemind/freemind-cli.config", config).ok();
+    let mut path = dirs::config_dir().unwrap_or(PathBuf::new());
+    path.push("freemind/");
+    fs::create_dir_all(path.clone()).ok();
+    path.push("freemind-cli.config");
+    confy::store_path(path, config).ok();
     Some(())
 }
 
