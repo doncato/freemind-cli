@@ -1,6 +1,6 @@
 #[macro_use] extern crate prettytable;
 use confy;
-use data_types::{AppState, AppConfig, AppCommand};
+use data_types::{AppState, AppConfig, AppCommand, AppElement};
 use std::fs;
 use std::io;
 use clap::{Arg, Command, ArgMatches, crate_authors, crate_description, crate_version, ArgAction};
@@ -13,35 +13,107 @@ pub(crate) mod data_types {
     use chrono::{TimeZone, Utc, LocalResult};
     use prettytable::{Table, Row};
     use serde::{Serialize, Deserialize};
+    use reqwest::{Client, Response, header::HeaderValue};
+    use quick_xml::de::from_str;
+    //use http::uri;
     
     #[derive(Serialize, Deserialize)]
+    struct Registry {
+        #[serde(rename = "entry")]
+        entries: Vec<AppElement>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename = "entry")]
     pub struct AppElement {
+        #[serde(rename = "@id")]
         id: Option<u16>,
+        #[serde(rename = "name")]
         title: String,
         description: String,
         due: Option<u32>,
     }
 
-    impl AppElement {
-        fn to_row(&self) -> Row {
-            let due_timestamp: i64 = self.due.unwrap_or(u32::MAX).into();
-            let utc_due: String = match Utc.timestamp_opt(due_timestamp, 0) {
-                LocalResult::None => "None".to_string(),
-                LocalResult::Single(val) => val.to_rfc2822(),
-                LocalResult::Ambiguous(val, _) => val.to_rfc2822(),
+    impl PartialEq for AppElement {
+        fn eq(&self, other: &AppElement) -> bool {
+            match self.id {
+                Some(id) => Some(id) == other.id,
+                None => self == other,
+            }
+        }
+    }
+
+    impl fmt::Display for AppElement {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            let disp_due: String = match self.due {
+                Some(due) => {
+                    let due_timestamp: i64 = due.into();
+                    let utc_due: String = match Utc.timestamp_opt(due_timestamp, 0) {
+                        LocalResult::None => "None".to_string(),
+                        LocalResult::Single(val) => val.to_rfc2822(),
+                        LocalResult::Ambiguous(val, _) => val.to_rfc2822(),
+                    };
+                    utc_due
+                },
+                None => "None".to_string()
             };
-            //let offset = Local::now().offset();
+
+            let id: String = match self.id {
+                Some(id) => format!("{}", id),
+                None => "None".to_string()
+            };
+            write!(
+                f,
+                "ID: {}\nTitle: {}\nDescription: {}\nDue: {:#?}\n",
+                id,
+                &self.title,
+                &self.description,
+                disp_due
+            )
+        }
+    }
+
+    impl AppElement {
+        pub fn new(id: Option<u16>, title: String, description: String, due: Option<u32>) -> Self{
+            Self {
+                id,
+                title,
+                description,
+                due,
+            }
+        }
+        fn to_row(&self) -> Row {
+            let disp_due: String = match self.due {
+                Some(due) => {
+                    let due_timestamp: i64 = due.into();
+                    let utc_due: String = match Utc.timestamp_opt(due_timestamp, 0) {
+                        LocalResult::None => "None".to_string(),
+                        LocalResult::Single(val) => val.to_rfc2822(),
+                        LocalResult::Ambiguous(val, _) => val.to_rfc2822(),
+                    };
+                    //let offset = Local::now().offset();
+                    utc_due
+
+                },
+                None => "None".to_string(),
+            };
+
+            let id = match self.id {
+                Some(id) => format!("{}", id),
+                None => "None".to_string()
+            };
             row![
-                format!("{:?}", self.id),
+                id,
                 self.title,
                 self.description,
-                utc_due,
+                disp_due,
             ]
         }
     }
 
     pub struct AppState {
         config: AppConfig,
+        client: Option<Client>,
         elements: Vec<AppElement>,
         synced: bool,
     }
@@ -50,18 +122,84 @@ pub(crate) mod data_types {
         pub fn new(config: AppConfig) -> Self {
             Self {
                 config,
+                client: None,
                 elements: Vec::new(),
                 synced: false,
             }
         }
+
+        pub fn push(&mut self, element: Option<AppElement>) {
+            if let Some(e) = element {
+                self.elements.push(e)
+            }
+        }
+
+        pub fn unsynced(&mut self) {
+            self.synced = false;
+        }
+
+        fn handle_empty_client(&mut self) {
+            if self.client.is_none() {
+                self.client = Some(
+                    Client::builder()
+                        .user_agent("Freemind CLI")
+                        .build().unwrap()
+                );
+            }
+        }
+
+        fn add_new_elements(&mut self, new: Vec<AppElement>) {
+            new.into_iter().for_each(|e| {
+                if self.elements.iter().any(|i| &e == i) {} else {
+                    self.elements.push(e)
+                }
+            })
+        }
+
+        async fn fetch(&mut self) -> Result<Vec<AppElement>, reqwest::Error> {
+            self.handle_empty_client();
+            let res: Response = self.client.as_ref().unwrap()
+                .post(format!("{}/xml/fetch", self.config.server_address))
+                .header(
+                    "user".to_string(),
+                    HeaderValue::from_str(&self.config.username).unwrap()
+                )
+                .header(
+                    format!("{}", &self.config.auth_method).to_lowercase(),
+                   &self.config.secret
+                )
+                .send()
+                .await?;
+
+            let headers = res.headers();
+            if headers.get("content-type") == Some(&HeaderValue::from_static("text/xml")) {
+                let txt = res.text().await?;
+                let r: Registry = from_str(&txt).unwrap();
+                return Ok(r.entries);
+            }
+
+            Ok(Vec::new())
+        }
+
+        pub fn is_synced(&self) -> bool {
+            self.synced
+        }
         pub fn list(&self) {
             let mut table = Table::new();
             table.set_titles(row!["ID", "Title", "Description", "Due"]);
-            self.elements.iter().map(|e| table.add_row(e.to_row()));
+            self.elements.iter().for_each(|e| {
+                table.add_row(e.to_row());
+            });
+            table.printstd();
         }
 
-        pub fn sync(&self) {
+        pub async fn sync(&mut self) -> Result<(), reqwest::Error> {
+            let fetched_entries = self.fetch().await?;
 
+            self.add_new_elements(fetched_entries);
+
+            self.synced = true;
+            Ok(())
         }
     }
 
@@ -109,14 +247,12 @@ pub(crate) mod data_types {
     }
 
     impl AppCommand {
-        pub fn is_quit(&self) -> bool {
-            &Self::Quit == self
-        }
         pub fn get_command_list() -> Vec<AppCommand> {
             vec![
                 Self::List,
                 Self::Sync,
                 Self::Filter,
+                Self::Edit,
                 Self::Add,
                 Self::Remove,
                 Self::Help,
@@ -155,8 +291,8 @@ pub(crate) mod data_types {
     pub struct AppConfig {
         pub server_address: String,
         pub username: String,
-        secret: String,
-        auth_method: AuthMethod,
+        pub secret: String,
+        pub auth_method: AuthMethod,
     }
 
     /// Construct a default AppConfig
@@ -230,7 +366,7 @@ fn write_app_config(config: &AppConfig) -> Option<()> {
 fn setup_config(prev_config: &AppConfig) -> Result<AppConfig, std::io::Error> {
     println!("\n   ### Config Setup: ###\n");
     let server_address: String = Input::new()
-        .with_prompt("URL of the server to connect to https:// ")
+        .with_prompt("URL of the server to connect to")
         .with_initial_text(&prev_config.server_address)
         .interact_text()?;
 
@@ -272,7 +408,35 @@ fn setup_config(prev_config: &AppConfig) -> Result<AppConfig, std::io::Error> {
 }
 
 
-fn filter_menu()
+fn filter_menu() {
+    println!("The Filter Menu is currently not implemented");
+}
+
+fn edit_menu() {
+    println!("The Edit Menu is currently not implemented");
+}
+
+fn add_menu() -> Result<Option<AppElement>, std::io::Error> {
+    let title: String = Input::new()
+        .with_prompt("Title")
+        .interact_text()?;
+
+    let description: String = Input::new()
+        .with_prompt("Description")
+        .interact_text()?;
+
+    let element: AppElement = AppElement::new(None, title, description, None);
+    println!("\nYou are about to create the following new element:\n\n{}\n", element);
+    if Confirm::new().with_prompt("Do you want to create this element?").interact()? {
+        return Ok(Some(element));
+    } else {
+        return Ok(None);
+    }
+}
+
+fn remove_menu() {
+    println!("The Remove menu is currently not implemented");
+}
 
 /// Help dialog (more a print but who cares)
 fn help_menu() {
@@ -282,31 +446,44 @@ fn help_menu() {
 }
 
 /// Main Dialog
-fn main_menu(config: AppConfig) -> Result<(), io::Error> {
+async fn main_menu(config: AppConfig) -> Result<(), io::Error> {
+    //let last_index: usize = 0;
     let mut state = AppState::new(config);
     let commands: Vec<AppCommand> = AppCommand::get_command_list();
     loop {
+        println!("================================");
         let selction: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
-            .with_prompt("Choose what you want to do")
+            .with_prompt(">")
             .items(&commands)
             .default(0)
             .interact_on_opt(&Term::stderr())?.unwrap_or(0);
     
+        println!("================================");
         match AppCommand::from(selction) {
                 AppCommand::List => state.list(),
-                AppCommand::Sync => state.sync(),
+                AppCommand::Sync => state.sync().await.unwrap(),
                 AppCommand::Filter => filter_menu(),
                 AppCommand::Edit => edit_menu(),
-                AppCommand::Add => add_menu(),
+                AppCommand::Add => {state.push(add_menu()?); state.unsynced();},
                 AppCommand::Remove => remove_menu(),
                 AppCommand::Help => help_menu(),
                 AppCommand::Quit => break,
             }
     }
+    if !state.is_synced() {
+        if Confirm::new().with_prompt("Attention: The current state seems to be unsynced with the server! Do you want to sync now?").interact()? {
+            println!("Syncing...");
+            state.sync().await.unwrap_or(());
+        } else {
+            println!("Discarding Changes...");
+        }
+    }
+    println!("Bye!");
     Ok(())
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args: ArgMatches = Command::new("Freemind CLI")
         .author(crate_authors!("\n"))
         .about(crate_description!())
@@ -346,7 +523,7 @@ fn main() {
 
     // Config is now initialized! Now Deal with it.
     
-    main_menu(config).expect("FATAL! Dialog encountered an error!");
+    main_menu(config).await.expect("FATAL! Dialog encountered an error!");
 
 
 }
