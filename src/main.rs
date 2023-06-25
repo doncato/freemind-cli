@@ -33,13 +33,15 @@ pub(crate) mod data_types {
         title: String,
         description: String,
         due: Option<u32>,
+        #[serde(skip)]
+        removed: bool,
     }
 
     impl PartialEq for AppElement {
         fn eq(&self, other: &AppElement) -> bool {
             match self.id {
                 Some(id) => Some(id) == other.id,
-                None => self == other,
+                None => self == other, // Isn't this recursive???
             }
         }
     }
@@ -81,6 +83,7 @@ pub(crate) mod data_types {
                 title,
                 description,
                 due,
+                removed: false,
             }
         }
         fn to_row(&self) -> Row {
@@ -129,6 +132,14 @@ pub(crate) mod data_types {
             }
         }
 
+        pub fn get_elements(&self) -> &Vec<AppElement> {
+            return &self.elements;
+        }
+
+        pub fn get_ids(&self) -> Vec<u16> {
+            return self.elements.clone().into_iter().filter_map(|e| e.id).collect();
+        }
+
         pub fn push(&mut self, element: Option<AppElement>) {
             if let Some(e) = element {
                 self.elements.push(e)
@@ -149,9 +160,13 @@ pub(crate) mod data_types {
             }
         }
 
+        /// Adds non existing elements to the State of elements, skips
+        /// already existing elements
         fn add_new_elements(&mut self, new: Vec<AppElement>) {
             new.into_iter().for_each(|e| {
-                if self.elements.iter().any(|i| &e == i) {} else {
+                if self.elements.iter().any(|i| &e == i) {
+
+                } else {
                     self.elements.push(e)
                 }
             })
@@ -201,6 +216,12 @@ pub(crate) mod data_types {
 
             self.synced = true;
             Ok(())
+        }
+
+        pub fn remove(&mut self, id: u16) -> bool {
+            let Some(found_index) = self.elements.iter().position(|e| e.id == Some(id)) else {return false};
+            self.elements.remove(found_index);
+            true
         }
     }
 
@@ -423,7 +444,7 @@ fn edit_menu() {
     println!("The Edit Menu is currently not implemented");
 }
 
-fn add_menu() -> Result<Option<AppElement>, std::io::Error> {
+fn add_menu(state: &mut AppState) -> Result<(), std::io::Error> {
     let title: String = Input::new()
         .with_prompt("Title")
         .interact_text()?;
@@ -435,17 +456,42 @@ fn add_menu() -> Result<Option<AppElement>, std::io::Error> {
     let element: AppElement = AppElement::new(None, title, description, None);
     println!("\nYou are about to create the following new element:\n\n{}\n", element);
     if Confirm::new().with_prompt("Do you want to create this element?").interact()? {
-        return Ok(Some(element));
+        state.push(Some(element));
+        state.unsynced();
+        return Ok(());
     } else {
-        return Ok(None);
+        return Ok(());
     }
 }
 
-fn remove_menu() {
+/// Remove Dialog
+fn remove_menu(state: &mut AppState) -> Result<(), io::Error> {
+    state.list();
+    println!("Select the ID of the element to be deleted:");
+
+    let mut ids: Vec<String> = state.get_ids().into_iter().map(|e| e.to_string()).collect();
+    ids.push("Exit".to_string());
+    let last_element = ids.len() - 1;
+    let selection: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
+        .with_prompt("#")
+        .items(&ids)
+        .default(last_element)
+        .interact_on_opt(&Term::stderr())?.unwrap_or(0);
     println!("The Remove menu is currently not implemented");
+
+    if selection == last_element {
+        return Ok(());
+    } else {
+        let Ok(num) = ids[selection].parse::<u16>() else { return Ok(()) };
+        if state.remove(num) {
+            state.unsynced();
+        };
+    }
+
+    Ok(())
 }
 
-/// Help dialog (more a print but who cares)
+/// Help Dialog (more a print but who cares)
 fn help_menu() {
     println!("This is the Freemind Command Line Client");
     println!("You can perform different actions on your calendar and sync them");
@@ -471,8 +517,8 @@ async fn main_menu(config: AppConfig) -> Result<(), io::Error> {
                 AppCommand::Sync => state.sync().await.unwrap(),
                 AppCommand::Filter => filter_menu(),
                 AppCommand::Edit => edit_menu(),
-                AppCommand::Add => {state.push(add_menu()?); state.unsynced();},
-                AppCommand::Remove => remove_menu(),
+                AppCommand::Add => add_menu(&mut state)?,
+                AppCommand::Remove => remove_menu(&mut state)?,
                 AppCommand::Help => help_menu(),
                 AppCommand::Quit => break,
             }
