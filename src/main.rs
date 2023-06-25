@@ -10,12 +10,12 @@ use dialoguer::{Input, Confirm, Password, FuzzySelect, Select, theme::ColorfulTh
 use crate::data_types::AuthMethod;
 
 pub(crate) mod data_types {
-    use std::fmt;
+    use std::{fmt, io::Cursor, str};
     use chrono::{TimeZone, Utc, LocalResult};
     use prettytable::{Table, Row};
     use serde::{Serialize, Deserialize};
     use reqwest::{Client, Response, header::HeaderValue};
-    use quick_xml::de::from_str;
+    use quick_xml::{de::from_str, Reader, events::{Event, BytesStart}, Writer, utils::Bytes};
     //use http::uri;
     
     #[derive(Serialize, Deserialize)]
@@ -106,12 +106,22 @@ pub(crate) mod data_types {
                 Some(id) => format!("{}", id),
                 None => "None".to_string()
             };
-            row![
-                id,
-                self.title,
-                self.description,
-                disp_due,
-            ]
+            if self.removed {
+                row![
+                    Fri =>
+                    id,
+                    self.title,
+                    self.description,
+                    disp_due,
+                ]
+            } else {
+                row![
+                    id,
+                    self.title,
+                    self.description,
+                    disp_due,
+                ]
+            }
         }
     }
 
@@ -136,8 +146,14 @@ pub(crate) mod data_types {
             return &self.elements;
         }
 
-        pub fn get_ids(&self) -> Vec<u16> {
-            return self.elements.clone().into_iter().filter_map(|e| e.id).collect();
+        pub fn get_ids(&self, ignore_removed: bool) -> Vec<u16> {
+            return self.elements
+                .clone()
+                .into_iter()
+                .filter(|e| !e.removed && ignore_removed)
+                .filter_map(|e| e.id)
+                .collect();
+
         }
 
         pub fn push(&mut self, element: Option<AppElement>) {
@@ -172,7 +188,7 @@ pub(crate) mod data_types {
             })
         }
 
-        async fn fetch(&mut self) -> Result<Vec<AppElement>, reqwest::Error> {
+        async fn fetch(&mut self) -> Result<String, reqwest::Error> {
             self.handle_empty_client();
             let res: Response = self.client.as_ref().unwrap()
                 .post(format!("{}/xml/fetch", self.config.server_address))
@@ -190,11 +206,92 @@ pub(crate) mod data_types {
             let headers = res.headers();
             if headers.get("content-type") == Some(&HeaderValue::from_static("text/xml")) {
                 let txt = res.text().await?;
-                let r: Registry = from_str(&txt).unwrap();
-                return Ok(r.entries);
+                return Ok(txt);
             }
 
-            Ok(Vec::new())
+            Ok(String::new())
+        }
+
+        async fn upload(&self, payload: &String) -> Result<(), reqwest::Error> {
+            Ok(())
+        }
+
+        fn delete_removed(&mut self, xml: String) -> Result<(bool, String), reqwest::Error> {
+            let mut modified = false;
+
+            let mut reader = Reader::from_str(&xml);
+            let mut writer = Writer::new(Cursor::new(Vec::new()));
+            
+            reader.trim_text(true);
+
+            let mut ffwd: bool = false;
+            let mut skip: BytesStart = BytesStart::new("");
+
+            loop {
+                match reader.read_event() {
+                    Ok(Event::Start(_)) if ffwd => {
+                        continue
+                    }
+                    Ok(Event::Start(e)) if e.name().as_ref() == b"entry" => {
+                        let mut write = true;
+                        e
+                            .attributes()
+                            .into_iter()
+                            .filter_map(|f| f.ok())
+                            .for_each(|val| {
+                                if val.key.local_name().as_ref() == b"id" {
+                                    if let Ok(v) = val.decode_and_unescape_value(&reader) {
+                                        if let Ok(v) = v.to_string().parse::<u16>() {
+                                            if let Some(pos) = self.elements.iter().position(|e| e.id == Some(v)) {
+                                                if pos < self.elements.len() && self.elements[pos].removed {
+                                                    self.elements.remove(pos);
+                                                    ffwd = true;
+                                                    skip = e.to_owned();
+                                                    modified = true;
+                                                    write = false;
+                                                };
+                                            };
+                                        };
+                                    };
+                                };
+                            });
+                        if write {
+                            writer.write_event(Event::Start(e.to_owned())).unwrap();
+                        }
+                    },
+                    Ok(Event::Start(e)) => {
+                        writer.write_event(Event::Start(e.to_owned())).unwrap();
+                    }
+                    Ok(Event::End(e)) if e == skip.to_end() => {
+                        ffwd = false;
+                        skip = BytesStart::new("");
+                    }
+                    Ok(Event::End(_)) if ffwd => {
+                        continue
+                    }
+                    Ok(Event::End(e)) => {
+                        writer.write_event(Event::End(e.to_owned())).unwrap();
+                    },
+                    Ok(Event::Eof) => break,
+                    Ok(_) if ffwd => {
+                        continue
+                    },
+                    Ok(e) => {
+                        writer.write_event(e).unwrap();
+                    }
+                    Err(_) => break,
+                    //_ => (),
+                }
+            }
+
+            Ok((
+                modified,
+                str::from_utf8(
+                    &writer.into_inner().into_inner()
+                )
+                .unwrap()
+                .to_string()
+            ))
         }
 
         pub fn is_synced(&self) -> bool {
@@ -209,18 +306,32 @@ pub(crate) mod data_types {
             table.printstd();
         }
 
+        /// Syncs changes, fetches new elements, deletes removed elements and pushes
         pub async fn sync(&mut self) -> Result<(), reqwest::Error> {
-            let fetched_entries = self.fetch().await?;
+            println!("Fetching new Entries...");
+            let result = self.fetch().await?;
 
-            self.add_new_elements(fetched_entries);
+            let (needs_upload, answer) = self.delete_removed(result.to_string())?;
+
+            if needs_upload {
+                println!("Uploading Changes...");
+                //println!(">>>>>\n{}\n<<<<<\n{}", result, answer); // For testing
+                self.upload(&answer).await?;
+            }
+
+            let fetched_registry: Registry = from_str(&answer).unwrap();
+
+            self.add_new_elements(fetched_registry.entries);
 
             self.synced = true;
+            println!("Done!");
             Ok(())
         }
 
         pub fn remove(&mut self, id: u16) -> bool {
-            let Some(found_index) = self.elements.iter().position(|e| e.id == Some(id)) else {return false};
-            self.elements.remove(found_index);
+            let Some(posi) = self.elements.iter().position(|e| e.id == Some(id)) else {return false};
+            //self.elements.remove(found_index);
+            self.elements[posi].removed = true;
             true
         }
     }
@@ -469,7 +580,7 @@ fn remove_menu(state: &mut AppState) -> Result<(), io::Error> {
     state.list();
     println!("Select the ID of the element to be deleted:");
 
-    let mut ids: Vec<String> = state.get_ids().into_iter().map(|e| e.to_string()).collect();
+    let mut ids: Vec<String> = state.get_ids(true).into_iter().map(|e| e.to_string()).collect();
     ids.push("Exit".to_string());
     let last_element = ids.len() - 1;
     let selection: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
@@ -477,7 +588,6 @@ fn remove_menu(state: &mut AppState) -> Result<(), io::Error> {
         .items(&ids)
         .default(last_element)
         .interact_on_opt(&Term::stderr())?.unwrap_or(0);
-    println!("The Remove menu is currently not implemented");
 
     if selection == last_element {
         return Ok(());
@@ -500,7 +610,7 @@ fn help_menu() {
 
 /// Main Dialog
 async fn main_menu(config: AppConfig) -> Result<(), io::Error> {
-    //let last_index: usize = 0;
+    let mut last_index: usize = 0;
     let mut state = AppState::new(config);
     let commands: Vec<AppCommand> = AppCommand::get_command_list();
     loop {
@@ -508,10 +618,11 @@ async fn main_menu(config: AppConfig) -> Result<(), io::Error> {
         let selction: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
             .with_prompt(">")
             .items(&commands)
-            .default(0)
+            .default(last_index)
             .interact_on_opt(&Term::stderr())?.unwrap_or(0);
     
         println!("================================");
+        last_index = selction;
         match AppCommand::from(selction) {
                 AppCommand::List => state.list(),
                 AppCommand::Sync => state.sync().await.unwrap(),
