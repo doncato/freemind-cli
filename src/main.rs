@@ -198,7 +198,7 @@ pub(crate) mod data_types {
                 )
                 .header(
                     format!("{}", &self.config.auth_method).to_lowercase(),
-                   &self.config.secret
+                    &self.config.secret
                 )
                 .send()
                 .await?;
@@ -212,8 +212,29 @@ pub(crate) mod data_types {
             Ok(String::new())
         }
 
-        async fn upload(&self, payload: &String) -> Result<(), reqwest::Error> {
-            Ok(())
+        async fn upload(&mut self, payload: String) -> Result<u16, reqwest::Error> {
+            self.handle_empty_client();
+            let res: Response = self.client.as_ref().unwrap()
+                .post(format!("{}/xml/update", self.config.server_address))
+                .header(
+                    "user".to_string(),
+                    HeaderValue::from_str(&self.config.username).unwrap()
+                )
+                .header(
+                    format!("{}", &self.config.auth_method).to_lowercase(),
+                    &self.config.secret
+                )
+                .header(
+                    "content-type".to_string(),
+                    "text/xml".to_string(),
+                )
+                .body(payload)
+                .send()
+                .await?;
+
+            let status = res.status().as_u16();
+
+            return Ok(status)
         }
 
         fn delete_removed(&mut self, xml: String) -> Result<(bool, String), reqwest::Error> {
@@ -316,7 +337,7 @@ pub(crate) mod data_types {
             if needs_upload {
                 println!("Uploading Changes...");
                 //println!(">>>>>\n{}\n<<<<<\n{}", result, answer); // For testing
-                self.upload(&answer).await?;
+                self.upload(answer.clone()).await?;
             }
 
             let fetched_registry: Registry = from_str(&answer).unwrap();
