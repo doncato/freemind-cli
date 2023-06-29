@@ -813,7 +813,7 @@ fn add_menu(state: &mut AppState) -> Result<(), std::io::Error> {
 
     let selection_due = FuzzySelect::with_theme(&ColorfulTheme::default())
         .with_prompt("Due Date")
-        .items(&["None", "Tomorrow", "Next Week", "Custom"])
+        .items(&["none", "tomorrow", "upcoming week", "custom"])
         .default(0)
         .interact_on_opt(&Term::stderr())?.unwrap_or(0);
 
