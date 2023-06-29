@@ -882,15 +882,15 @@ async fn main_menu(config: AppConfig) -> Result<(), io::Error> {
     let commands: Vec<AppCommand> = AppCommand::get_command_list();
     loop {
         println!("===========================================================");
-        let selction: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
+        let selection: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
             .with_prompt(">")
             .items(&commands)
             .default(last_index)
             .interact_on_opt(&Term::stderr())?.unwrap_or(0);
     
         println!("===========================================================");
-        last_index = selction;
-        match AppCommand::from(selction) {
+        last_index = selection;
+        match AppCommand::from(selection) {
                 AppCommand::List => state.list(),
                 AppCommand::Sync => state.sync().await.unwrap(),
                 AppCommand::Filter => filter_menu(&mut state)?,
