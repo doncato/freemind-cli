@@ -127,6 +127,8 @@ pub(crate) mod data_types {
                 writer.write_event(Event::End(BytesEnd::new("due")))?;
             }
 
+            writer.write_event(Event::End(BytesEnd::new("entry")))?;
+
             Ok(())
         }
 
