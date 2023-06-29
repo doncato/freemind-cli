@@ -15,7 +15,8 @@ pub(crate) mod data_types {
     use prettytable::{Table, Row};
     use serde::{Serialize, Deserialize};
     use reqwest::{Client, Response, header::HeaderValue};
-    use quick_xml::{de::from_str, Reader, events::{Event, BytesStart}, Writer, utils::Bytes};
+    use quick_xml::{de::from_str, Reader, events::{Event, BytesStart}, Writer};
+    use rand::Rng;
     //use http::uri;
     
     #[derive(Serialize, Deserialize)]
@@ -86,6 +87,21 @@ pub(crate) mod data_types {
                 removed: false,
             }
         }
+
+        /// Generates a new ID for this element. The id will not be in existing ids
+        /// Updates the self element and the existing ids
+        /// Returns the new id
+        pub fn generate_id(&mut self, existing_ids: &mut Vec<u16>) -> u16 {
+            let mut rng = rand::thread_rng();
+            let mut new_id: u16 = 0;
+            while new_id == 0 || existing_ids.iter().any(|&i| i==new_id) {
+                new_id = rng.gen::<u16>();
+            }
+            self.id = Some(new_id);
+            existing_ids.push(new_id);
+            new_id
+        }
+
         fn to_row(&self) -> Row {
             let disp_due: String = match self.due {
                 Some(due) => {
@@ -109,6 +125,14 @@ pub(crate) mod data_types {
             if self.removed {
                 row![
                     Fri =>
+                    id,
+                    self.title,
+                    self.description,
+                    disp_due,
+                ]
+            } else if self.id.is_none() {
+                row![
+                    Fgi =>
                     id,
                     self.title,
                     self.description,
@@ -188,6 +212,18 @@ pub(crate) mod data_types {
             })
         }
 
+        fn add_missing_ids(&mut self, existing_ids: &mut Vec<u16>) -> (bool, Vec<u16>) {
+            let mut new_ids: Vec<u16> = Vec::new();
+            let count_before: usize = self.elements.len();
+            let count_after: usize = self.elements
+                .iter_mut()
+                .filter(|e| e.id.is_none())
+                .map(|e| {
+                    new_ids.push(e.generate_id(existing_ids))
+                }).count();
+            (count_before != count_after, new_ids)
+        }
+
         async fn fetch(&mut self) -> Result<String, reqwest::Error> {
             self.handle_empty_client();
             let res: Response = self.client.as_ref().unwrap()
@@ -212,6 +248,7 @@ pub(crate) mod data_types {
             Ok(String::new())
         }
 
+        /// Uploads the given payload to the server and returns the HTTP status code
         async fn upload(&mut self, payload: String) -> Result<u16, reqwest::Error> {
             self.handle_empty_client();
             let res: Response = self.client.as_ref().unwrap()
@@ -237,6 +274,9 @@ pub(crate) mod data_types {
             return Ok(status)
         }
 
+        /// Takes the whole XML Document and removes all Entries that were removed
+        /// in the internal state.
+        /// Returns whether changes where made and the string of the new payload
         fn delete_removed(&mut self, xml: String) -> Result<(bool, String), reqwest::Error> {
             let mut modified = false;
 
@@ -315,6 +355,35 @@ pub(crate) mod data_types {
             ))
         }
 
+        /// Takes the whole XML Document and inserts Entries defined by the ids vec into it
+        fn insert_created_entries(&self, xml: String, ids: Vec<u16>) -> String {
+            let mut reader = Reader::from_str(&xml);
+            let mut writer = Writer::new(Cursor::new(Vec::new()));
+
+            loop {
+                match reader.read_event() {
+                    Ok(Event::Start(e)) if e.name().as_ref() == b"registry" => {
+                        writer.write_event(Event::Start(e.to_owned())).unwrap();
+                        self.elements
+                            .iter()
+                            .filter(|e| ids.iter().any(|i| Some(i) == e.id.as_ref()))
+                            .map(|e| {
+
+                            }).count();
+                    },
+                    Ok(Event::Eof) => break,
+                    Ok(e) => {writer.write_event(e).unwrap();}
+                    Err(_) => break,
+                }
+            }
+
+            str::from_utf8(
+                &writer
+                .into_inner()
+                .into_inner()
+            ).unwrap().to_string()
+        }
+
         pub fn is_synced(&self) -> bool {
             self.synced
         }
@@ -332,15 +401,31 @@ pub(crate) mod data_types {
             println!("Fetching new Entries...");
             let result = self.fetch().await?;
 
-            let (needs_upload, answer) = self.delete_removed(result.to_string())?;
+            println!("Evaluating State...");
+            let (entries_deleted, mut answer) = self.delete_removed(result.to_string())?;
+
+            let fetched_registry: Registry = from_str(&answer).unwrap();
+
+            let mut existing_ids: Vec<u16> = fetched_registry.entries
+                .clone()
+                .into_iter()
+                .filter(|e| !e.removed)
+                .filter_map(|e| e.id)
+                .collect();
+
+            let (entries_added, new_ids) = self.add_missing_ids(&mut existing_ids);
+
+            if entries_added {
+                answer = self.insert_created_entries(answer, new_ids);
+            }
+
+            let needs_upload: bool = entries_deleted || entries_added;
 
             if needs_upload {
                 println!("Uploading Changes...");
-                //println!(">>>>>\n{}\n<<<<<\n{}", result, answer); // For testing
                 self.upload(answer.clone()).await?;
             }
 
-            let fetched_registry: Registry = from_str(&answer).unwrap();
 
             self.add_new_elements(fetched_registry.entries);
 
