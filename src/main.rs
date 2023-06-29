@@ -15,7 +15,7 @@ pub(crate) mod data_types {
     use prettytable::{Table, Row};
     use serde::{Serialize, Deserialize};
     use reqwest::{Client, Response, header::HeaderValue};
-    use quick_xml::{de::from_str, Reader, events::{Event, BytesStart}, Writer};
+    use quick_xml::{de::from_str, Reader, events::{attributes::Attribute, Event, BytesStart, BytesText, BytesEnd}, Writer};
     use rand::Rng;
     //use http::uri;
     
@@ -100,6 +100,34 @@ pub(crate) mod data_types {
             self.id = Some(new_id);
             existing_ids.push(new_id);
             new_id
+        }
+
+        /// Writes the element using the given quick xml writer
+        /// skips silently if the element does not have an ID
+        pub fn write<W: std::io::Write>(&self, writer: &mut Writer<W>) -> Result<(), quick_xml::Error> {
+            if self.id.is_none() {
+                return Ok(());
+            }
+            writer.write_event(Event::Start(
+                BytesStart::new("entry")
+                    .with_attributes([Attribute::from(("id", self.id.unwrap().to_string().as_str()))])
+                )
+            )?;
+            writer.write_event(Event::Start(BytesStart::new("name")))?;
+            writer.write_event(Event::Text(BytesText::new(&self.title)))?;
+            writer.write_event(Event::End(BytesEnd::new("name")))?;
+
+            writer.write_event(Event::Start(BytesStart::new("description")))?;
+            writer.write_event(Event::Text(BytesText::new(&self.description)))?;
+            writer.write_event(Event::End(BytesEnd::new("description")))?;
+
+            if self.due.is_some() {
+                writer.write_event(Event::Start(BytesStart::new("due")))?;
+                writer.write_event(Event::Text(BytesText::new(&self.due.unwrap().to_string())))?;
+                writer.write_event(Event::End(BytesEnd::new("due")))?;
+            }
+
+            Ok(())
         }
 
         fn to_row(&self) -> Row {
@@ -368,7 +396,7 @@ pub(crate) mod data_types {
                             .iter()
                             .filter(|e| ids.iter().any(|i| Some(i) == e.id.as_ref()))
                             .map(|e| {
-
+                                e.write(&mut writer).unwrap();
                             }).count();
                     },
                     Ok(Event::Eof) => break,
