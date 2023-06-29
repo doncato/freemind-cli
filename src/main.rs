@@ -162,7 +162,7 @@ pub(crate) mod data_types {
                 ]
             } else if self.id.is_none() {
                 row![
-                    Fgi =>
+                    Fbi =>
                     id,
                     self.title,
                     self.description,
