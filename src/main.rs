@@ -3,6 +3,7 @@ use confy;
 use data_types::{AppState, AppConfig, AppCommand, AppElement};
 use std::fs;
 use std::io;
+use std::ops::Add;
 use std::path::PathBuf;
 use clap::{Arg, Command, ArgMatches, crate_authors, crate_description, crate_version, ArgAction};
 use dialoguer::{Input, Confirm, Password, FuzzySelect, Select, theme::ColorfulTheme, console::Term};
@@ -466,7 +467,6 @@ pub(crate) mod data_types {
 
         pub fn remove(&mut self, id: u16) -> bool {
             let Some(posi) = self.elements.iter().position(|e| e.id == Some(id)) else {return false};
-            //self.elements.remove(found_index);
             self.elements[posi].removed = true;
             true
         }
@@ -691,7 +691,18 @@ fn edit_menu() {
     println!("The Edit Menu is currently not implemented");
 }
 
+/// Add Dialog
 fn add_menu(state: &mut AppState) -> Result<(), std::io::Error> {
+    fn chrono_date_helper(days: u64) -> Option<u32> {
+        let now = chrono::offset::Local::now();
+            let tmrw = now.add(chrono::naive::Days::new(days));
+            let final_time = chrono::naive::NaiveDateTime::new(
+                tmrw.date_naive(),
+                chrono::naive::NaiveTime::from_hms_opt(23, 59, 59).unwrap()
+            ).and_utc();
+            u32::try_from(final_time.timestamp()).ok()
+    }
+
     let title: String = Input::new()
         .with_prompt("Title")
         .interact_text()?;
@@ -700,7 +711,50 @@ fn add_menu(state: &mut AppState) -> Result<(), std::io::Error> {
         .with_prompt("Description")
         .interact_text()?;
 
-    let element: AppElement = AppElement::new(None, title, description, None);
+    let selection_due = FuzzySelect::with_theme(&ColorfulTheme::default())
+        .with_prompt("Due Date")
+        .items(&["None", "Tomorrow", "Next Week", "Custom"])
+        .default(0)
+        .interact_on_opt(&Term::stderr())?.unwrap_or(0);
+
+    let due: Option<u32> = match selection_due {
+        0 => None, // None
+        1  => { // Tomorrow
+            chrono_date_helper(1)
+        },
+        2 => { // Next Week
+            chrono_date_helper(7)
+        },
+        3 => { // Custom
+            let entered_input: String = Input::new()
+                .with_prompt("Enter a number of days (e.g. '+1') or a full date with time (e.g. '04.06.23 19:00')")
+                .validate_with(|input: &String| {
+                    if input.starts_with("+") {
+                         input[1..].parse::<u64>().is_ok()
+                    } else {
+                        chrono::naive::NaiveDateTime::parse_from_str(input, "%d.%m.%y %H:%M").is_ok()
+                    }.then_some(()).ok_or("Invalid format")
+                })
+                .interact_text()?;
+
+            if entered_input.starts_with("+") {
+                chrono_date_helper(entered_input[1..].parse::<u64>().unwrap_or(0))
+            } else {
+                u32::try_from(
+                    chrono::DateTime::parse_from_str(
+                        &entered_input,"%d.%m.%y %H:%M"
+                    )
+                    .unwrap()
+                    .naive_local()
+                    .and_utc()
+                    .timestamp()
+                ).ok()
+            }
+        },
+        _ => None,
+    };
+
+    let element: AppElement = AppElement::new(None, title, description, due);
     println!("\nYou are about to create the following new element:\n\n{}\n", element);
     if Confirm::new().with_prompt("Do you want to create this element?").interact()? {
         state.push(Some(element));
