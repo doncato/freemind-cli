@@ -139,8 +139,8 @@ pub(crate) mod data_types {
                     let due_timestamp: i64 = due.into();
                     let utc_due: String = match Utc.timestamp_opt(due_timestamp, 0) {
                         LocalResult::None => "None".to_string(),
-                        LocalResult::Single(val) => val.to_rfc2822(),
-                        LocalResult::Ambiguous(val, _) => val.to_rfc2822(),
+                        LocalResult::Single(val) => val.with_timezone(&chrono::Local).to_rfc2822(),
+                        LocalResult::Ambiguous(val, _) => val.with_timezone(&chrono::Local).to_rfc2822(),
                     };
                     //let offset = Local::now().offset();
                     utc_due
@@ -180,6 +180,7 @@ pub(crate) mod data_types {
         }
     }
 
+    /// The current state of the app
     pub struct AppState {
         config: AppConfig,
         client: Option<Client>,
@@ -740,13 +741,13 @@ fn add_menu(state: &mut AppState) -> Result<(), std::io::Error> {
             if entered_input.starts_with("+") {
                 chrono_date_helper(entered_input[1..].parse::<u64>().unwrap_or(0))
             } else {
+                let offset: String = chrono::Local::now().format("%z").to_string();
                 u32::try_from(
                     chrono::DateTime::parse_from_str(
-                        &entered_input,"%d.%m.%y %H:%M"
+                        &format!("{} {}", entered_input, offset),"%d.%m.%y %H:%M %z"
                     )
                     .unwrap()
-                    .naive_local()
-                    .and_utc()
+                    .naive_utc()
                     .timestamp()
                 ).ok()
             }
