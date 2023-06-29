@@ -246,14 +246,13 @@ pub(crate) mod data_types {
 
         fn add_missing_ids(&mut self, existing_ids: &mut Vec<u16>) -> (bool, Vec<u16>) {
             let mut new_ids: Vec<u16> = Vec::new();
-            let count_before: usize = self.elements.len();
             let count_after: usize = self.elements
                 .iter_mut()
                 .filter(|e| e.id.is_none())
                 .map(|e| {
                     new_ids.push(e.generate_id(existing_ids))
                 }).count();
-            (count_before != count_after, new_ids)
+            (count_after != 0, new_ids)
         }
 
         async fn fetch(&mut self) -> Result<String, reqwest::Error> {
