@@ -7,15 +7,16 @@ use std::ops::Add;
 use std::path::PathBuf;
 use clap::{Arg, Command, ArgMatches, crate_authors, crate_description, crate_version, ArgAction};
 use dialoguer::{Input, Confirm, Password, FuzzySelect, Select, theme::ColorfulTheme, console::Term};
+use prettytable::Table;
 
 use crate::data_types::AuthMethod;
 
 pub(crate) mod data_types {
     use std::{fmt, io::Cursor, str};
     use chrono::{TimeZone, Utc, LocalResult};
-    use prettytable::{Table, Row};
     use serde::{Serialize, Deserialize};
     use reqwest::{Client, Response, header::HeaderValue};
+    use prettytable::{Table, Row};
     use quick_xml::{de::from_str, Reader, events::{attributes::Attribute, Event, BytesStart, BytesText, BytesEnd}, Writer};
     use rand::Rng;
     //use http::uri;
@@ -89,6 +90,18 @@ pub(crate) mod data_types {
             }
         }
 
+        /// A function that returns the title followed by the description
+        /// as a single string, this is designed for usage of searching and
+        /// filtering
+        pub fn get_text(&self) -> String {
+            return String::new() + &self.title + " " + &self.description;
+        }
+
+        /// Gets the timestamp
+        pub fn get_timestamp(&self) -> Option<u32> {
+            return self.due
+        }
+
         /// Generates a new ID for this element. The id will not be in existing ids
         /// Updates the self element and the existing ids
         /// Returns the new id
@@ -133,7 +146,7 @@ pub(crate) mod data_types {
             Ok(())
         }
 
-        fn to_row(&self) -> Row {
+        pub fn to_row(&self) -> Row {
             let disp_due: String = match self.due {
                 Some(due) => {
                     let due_timestamp: i64 = due.into();
@@ -682,9 +695,106 @@ fn setup_config(prev_config: &AppConfig) -> Result<AppConfig, std::io::Error> {
 
 }
 
+/// Helper with chrono that creates a timestamp that is *days* in the future
+fn chrono_date_helper(days: u64) -> Option<u32> {
+    let now = chrono::offset::Local::now();
+        let tmrw = now.add(chrono::naive::Days::new(days));
+        let final_time = chrono::naive::NaiveDateTime::new(
+            tmrw.date_naive(),
+            chrono::naive::NaiveTime::from_hms_opt(23, 59, 59).unwrap()
+        ).and_utc();
+        u32::try_from(final_time.timestamp()).ok()
+}
 
-fn filter_menu() {
-    println!("The Filter Menu is currently not implemented");
+/// Questions the user to input a datetime and returns the unix timestamp
+fn get_datetime_from_user() -> Result<Option<u32>, std::io::Error> {
+    let entered_input: String = Input::new()
+                .with_prompt("Enter a number of days (e.g. '+1') or a full date with time (e.g. '04.06.23 19:00')")
+                .validate_with(|input: &String| {
+                    if input.starts_with("+") {
+                         input[1..].parse::<u64>().is_ok()
+                    } else {
+                        chrono::naive::NaiveDateTime::parse_from_str(input, "%d.%m.%y %H:%M").is_ok()
+                    }.then_some(()).ok_or("Invalid format")
+                })
+                .interact_text()?;
+
+            if entered_input.starts_with("+") {
+                Ok(chrono_date_helper(entered_input[1..].parse::<u64>().unwrap_or(0)))
+            } else {
+                let offset: String = chrono::Local::now().format("%z").to_string();
+                Ok(u32::try_from(
+                    chrono::DateTime::parse_from_str(
+                        &format!("{} {}", entered_input, offset),"%d.%m.%y %H:%M %z"
+                    )
+                    .unwrap()
+                    .naive_utc()
+                    .timestamp()
+                ).ok())
+            }
+}
+
+fn filter_menu(state: &mut AppState) -> Result<(), std::io::Error> {
+    let selection: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
+        .with_prompt("Filter according to")
+        .items(&["due", "other..."])
+        .default(0)
+        .interact_on_opt(&Term::stderr())?.unwrap_or(0);
+
+    let mut table = Table::new();
+    table.set_titles(row!["ID", "Title", "Description", "Due"]);
+
+    match selection {
+        0 => {
+            let due_selection: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
+                .with_prompt("Filter due...")
+                .items(&["tomorrow", "upcoming week", "next 4 weeks", "custom"])
+                .default(0)
+                .interact_on_opt(&Term::stderr())?.unwrap_or(0);
+            let timestamp: u32;
+            match due_selection {
+                0 => {
+                    timestamp = chrono_date_helper(1).unwrap();
+                },
+                1 => {
+                    timestamp = chrono_date_helper(7).unwrap();
+                },
+                2 => {
+                    timestamp = chrono_date_helper(28).unwrap();
+                },
+                3 => {
+                    timestamp = get_datetime_from_user()?.unwrap_or(u32::MAX);
+                },
+                _ => {return Ok(())},
+            };
+
+            state
+                .get_elements()
+                .iter()
+                .filter(|e| {e.get_timestamp().unwrap_or(u32::MAX) < timestamp})
+                .for_each(|e| {
+                    table.add_row(e.to_row());
+                });
+        },
+        1 => {
+            let custom_filter: String = Input::new()
+                .with_prompt("Enter keyword")
+                .interact_text()?;
+
+            state
+                .get_elements()
+                .iter()
+                .filter(|e| {e.get_text().contains(&custom_filter)})
+                .for_each(|e| {
+                    table.add_row(e.to_row());
+                });
+
+            },
+        _ => ()
+    };
+    table.printstd();
+        
+    Ok(())
 }
 
 fn edit_menu() {
@@ -693,16 +803,6 @@ fn edit_menu() {
 
 /// Add Dialog
 fn add_menu(state: &mut AppState) -> Result<(), std::io::Error> {
-    fn chrono_date_helper(days: u64) -> Option<u32> {
-        let now = chrono::offset::Local::now();
-            let tmrw = now.add(chrono::naive::Days::new(days));
-            let final_time = chrono::naive::NaiveDateTime::new(
-                tmrw.date_naive(),
-                chrono::naive::NaiveTime::from_hms_opt(23, 59, 59).unwrap()
-            ).and_utc();
-            u32::try_from(final_time.timestamp()).ok()
-    }
-
     let title: String = Input::new()
         .with_prompt("Title")
         .interact_text()?;
@@ -726,30 +826,7 @@ fn add_menu(state: &mut AppState) -> Result<(), std::io::Error> {
             chrono_date_helper(7)
         },
         3 => { // Custom
-            let entered_input: String = Input::new()
-                .with_prompt("Enter a number of days (e.g. '+1') or a full date with time (e.g. '04.06.23 19:00')")
-                .validate_with(|input: &String| {
-                    if input.starts_with("+") {
-                         input[1..].parse::<u64>().is_ok()
-                    } else {
-                        chrono::naive::NaiveDateTime::parse_from_str(input, "%d.%m.%y %H:%M").is_ok()
-                    }.then_some(()).ok_or("Invalid format")
-                })
-                .interact_text()?;
-
-            if entered_input.starts_with("+") {
-                chrono_date_helper(entered_input[1..].parse::<u64>().unwrap_or(0))
-            } else {
-                let offset: String = chrono::Local::now().format("%z").to_string();
-                u32::try_from(
-                    chrono::DateTime::parse_from_str(
-                        &format!("{} {}", entered_input, offset),"%d.%m.%y %H:%M %z"
-                    )
-                    .unwrap()
-                    .naive_utc()
-                    .timestamp()
-                ).ok()
-            }
+            get_datetime_from_user()?
         },
         _ => None,
     };
@@ -804,19 +881,19 @@ async fn main_menu(config: AppConfig) -> Result<(), io::Error> {
     let mut state = AppState::new(config);
     let commands: Vec<AppCommand> = AppCommand::get_command_list();
     loop {
-        println!("================================");
+        println!("===========================================================");
         let selction: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
             .with_prompt(">")
             .items(&commands)
             .default(last_index)
             .interact_on_opt(&Term::stderr())?.unwrap_or(0);
     
-        println!("================================");
+        println!("===========================================================");
         last_index = selction;
         match AppCommand::from(selction) {
                 AppCommand::List => state.list(),
                 AppCommand::Sync => state.sync().await.unwrap(),
-                AppCommand::Filter => filter_menu(),
+                AppCommand::Filter => filter_menu(&mut state)?,
                 AppCommand::Edit => edit_menu(),
                 AppCommand::Add => add_menu(&mut state)?,
                 AppCommand::Remove => remove_menu(&mut state)?,
