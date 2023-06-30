@@ -747,8 +747,8 @@ fn filter_menu(state: &mut AppState) -> Result<(), std::io::Error> {
     match selection {
         0 => {
             let due_selection: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
-                .with_prompt("Filter due")
-                .items(&["tomorrow", "upcoming week", "next 4 weeks", "custom"])
+                .with_prompt("Filter due within")
+                .items(&["the next day", "upcoming week", "next 4 weeks", "custom"])
                 .default(0)
                 .interact_on_opt(&Term::stderr())?.unwrap_or(0);
             let timestamp: u32;
