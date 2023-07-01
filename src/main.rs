@@ -1,6 +1,8 @@
+mod data;
+use crate::data::data_types::{AppState, AppConfig, AppCommand, AppElement, AuthMethod};
+
 #[macro_use] extern crate prettytable;
 use confy;
-use data_types::{AppState, AppConfig, AppCommand, AppElement};
 use std::fs;
 use std::io;
 use std::ops::Add;
@@ -9,627 +11,7 @@ use clap::{Arg, Command, ArgMatches, crate_authors, crate_description, crate_ver
 use dialoguer::{Input, Confirm, Password, FuzzySelect, Select, theme::ColorfulTheme, console::Term};
 use prettytable::Table;
 
-use crate::data_types::AuthMethod;
 
-pub(crate) mod data_types {
-    use std::{fmt, io::Cursor, str};
-    use chrono::{TimeZone, Utc, LocalResult};
-    use serde::{Serialize, Deserialize};
-    use reqwest::{Client, Response, header::HeaderValue};
-    use prettytable::{Table, Row};
-    use quick_xml::{de::from_str, Reader, events::{attributes::Attribute, Event, BytesStart, BytesText, BytesEnd}, Writer};
-    use rand::Rng;
-    //use http::uri;
-    
-    #[derive(Serialize, Deserialize)]
-    struct Registry {
-        #[serde(rename = "entry")]
-        entries: Vec<AppElement>,
-    }
-
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    #[serde(rename = "entry")]
-    pub struct AppElement {
-        #[serde(rename = "@id")]
-        id: Option<u16>,
-        #[serde(rename = "name")]
-        title: String,
-        description: String,
-        due: Option<u32>,
-        #[serde(skip)]
-        removed: bool,
-    }
-
-    impl PartialEq for AppElement {
-        fn eq(&self, other: &AppElement) -> bool {
-            match self.id {
-                Some(id) => Some(id) == other.id,
-                None => self == other, // Isn't this recursive???
-            }
-        }
-    }
-
-    impl fmt::Display for AppElement {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            let disp_due: String = match self.due {
-                Some(due) => {
-                    let due_timestamp: i64 = due.into();
-                    let utc_due: String = match Utc.timestamp_opt(due_timestamp, 0) {
-                        LocalResult::None => "None".to_string(),
-                        LocalResult::Single(val) => val.to_rfc2822(),
-                        LocalResult::Ambiguous(val, _) => val.to_rfc2822(),
-                    };
-                    utc_due
-                },
-                None => "None".to_string()
-            };
-
-            let id: String = match self.id {
-                Some(id) => format!("{}", id),
-                None => "None".to_string()
-            };
-            write!(
-                f,
-                "ID: {}\nTitle: {}\nDescription: {}\nDue: {:#?}\n",
-                id,
-                &self.title,
-                &self.description,
-                disp_due
-            )
-        }
-    }
-
-    impl AppElement {
-        pub fn new(id: Option<u16>, title: String, description: String, due: Option<u32>) -> Self{
-            Self {
-                id,
-                title,
-                description,
-                due,
-                removed: false,
-            }
-        }
-
-        /// A function that returns the title followed by the description
-        /// as a single string, this is designed for usage of searching and
-        /// filtering
-        pub fn get_text(&self) -> String {
-            return String::new() + &self.title + " " + &self.description;
-        }
-
-        /// Gets the timestamp
-        pub fn get_timestamp(&self) -> Option<u32> {
-            return self.due
-        }
-
-        /// Generates a new ID for this element. The id will not be in existing ids
-        /// Updates the self element and the existing ids
-        /// Returns the new id
-        pub fn generate_id(&mut self, existing_ids: &mut Vec<u16>) -> u16 {
-            let mut rng = rand::thread_rng();
-            let mut new_id: u16 = 0;
-            while new_id == 0 || existing_ids.iter().any(|&i| i==new_id) {
-                new_id = rng.gen::<u16>();
-            }
-            self.id = Some(new_id);
-            existing_ids.push(new_id);
-            new_id
-        }
-
-        /// Writes the element using the given quick xml writer
-        /// skips silently if the element does not have an ID
-        pub fn write<W: std::io::Write>(&self, writer: &mut Writer<W>) -> Result<(), quick_xml::Error> {
-            if self.id.is_none() {
-                return Ok(());
-            }
-            writer.write_event(Event::Start(
-                BytesStart::new("entry")
-                    .with_attributes([Attribute::from(("id", self.id.unwrap().to_string().as_str()))])
-                )
-            )?;
-            writer.write_event(Event::Start(BytesStart::new("name")))?;
-            writer.write_event(Event::Text(BytesText::new(&self.title)))?;
-            writer.write_event(Event::End(BytesEnd::new("name")))?;
-
-            writer.write_event(Event::Start(BytesStart::new("description")))?;
-            writer.write_event(Event::Text(BytesText::new(&self.description)))?;
-            writer.write_event(Event::End(BytesEnd::new("description")))?;
-
-            if self.due.is_some() {
-                writer.write_event(Event::Start(BytesStart::new("due")))?;
-                writer.write_event(Event::Text(BytesText::new(&self.due.unwrap().to_string())))?;
-                writer.write_event(Event::End(BytesEnd::new("due")))?;
-            }
-
-            writer.write_event(Event::End(BytesEnd::new("entry")))?;
-
-            Ok(())
-        }
-
-        pub fn to_row(&self) -> Row {
-            let disp_due: String = match self.due {
-                Some(due) => {
-                    let due_timestamp: i64 = due.into();
-                    let utc_due: String = match Utc.timestamp_opt(due_timestamp, 0) {
-                        LocalResult::None => "None".to_string(),
-                        LocalResult::Single(val) => val.with_timezone(&chrono::Local).to_rfc2822(),
-                        LocalResult::Ambiguous(val, _) => val.with_timezone(&chrono::Local).to_rfc2822(),
-                    };
-                    //let offset = Local::now().offset();
-                    utc_due
-
-                },
-                None => "None".to_string(),
-            };
-
-            let id = match self.id {
-                Some(id) => format!("{}", id),
-                None => "None".to_string()
-            };
-            if self.removed {
-                row![
-                    Fri =>
-                    id,
-                    self.title,
-                    self.description,
-                    disp_due,
-                ]
-            } else if self.id.is_none() {
-                row![
-                    Fbi =>
-                    id,
-                    self.title,
-                    self.description,
-                    disp_due,
-                ]
-            } else {
-                row![
-                    id,
-                    self.title,
-                    self.description,
-                    disp_due,
-                ]
-            }
-        }
-    }
-
-    /// The current state of the app
-    pub struct AppState {
-        config: AppConfig,
-        client: Option<Client>,
-        elements: Vec<AppElement>,
-        synced: bool,
-    }
-
-    impl AppState {
-        pub fn new(config: AppConfig) -> Self {
-            Self {
-                config,
-                client: None,
-                elements: Vec::new(),
-                synced: false,
-            }
-        }
-
-        pub fn get_elements(&self) -> &Vec<AppElement> {
-            return &self.elements;
-        }
-
-        pub fn get_ids(&self, ignore_removed: bool) -> Vec<u16> {
-            return self.elements
-                .clone()
-                .into_iter()
-                .filter(|e| !e.removed && ignore_removed)
-                .filter_map(|e| e.id)
-                .collect();
-
-        }
-
-        pub fn push(&mut self, element: Option<AppElement>) {
-            if let Some(e) = element {
-                self.elements.push(e)
-            }
-        }
-
-        pub fn unsynced(&mut self) {
-            self.synced = false;
-        }
-
-        fn handle_empty_client(&mut self) {
-            if self.client.is_none() {
-                self.client = Some(
-                    Client::builder()
-                        .user_agent("Freemind CLI")
-                        .build().unwrap()
-                );
-            }
-        }
-
-        /// Adds non existing elements to the State of elements, skips
-        /// already existing elements
-        fn add_new_elements(&mut self, new: Vec<AppElement>) {
-            new.into_iter().for_each(|e| {
-                if self.elements.iter().any(|i| &e == i) {
-
-                } else {
-                    self.elements.push(e)
-                }
-            })
-        }
-
-        fn add_missing_ids(&mut self, existing_ids: &mut Vec<u16>) -> (bool, Vec<u16>) {
-            let mut new_ids: Vec<u16> = Vec::new();
-            let count_after: usize = self.elements
-                .iter_mut()
-                .filter(|e| e.id.is_none())
-                .map(|e| {
-                    new_ids.push(e.generate_id(existing_ids))
-                }).count();
-            (count_after != 0, new_ids)
-        }
-
-        async fn fetch(&mut self) -> Result<String, reqwest::Error> {
-            self.handle_empty_client();
-            let res: Response = self.client.as_ref().unwrap()
-                .post(format!("{}/xml/fetch", self.config.server_address))
-                .header(
-                    "user".to_string(),
-                    HeaderValue::from_str(&self.config.username).unwrap()
-                )
-                .header(
-                    format!("{}", &self.config.auth_method).to_lowercase(),
-                    &self.config.secret
-                )
-                .send()
-                .await?;
-
-            let headers = res.headers();
-            if headers.get("content-type") == Some(&HeaderValue::from_static("text/xml")) {
-                let txt = res.text().await?;
-                return Ok(txt);
-            }
-
-            Ok(String::new())
-        }
-
-        /// Uploads the given payload to the server and returns the HTTP status code
-        async fn upload(&mut self, payload: String) -> Result<u16, reqwest::Error> {
-            self.handle_empty_client();
-            let res: Response = self.client.as_ref().unwrap()
-                .post(format!("{}/xml/update", self.config.server_address))
-                .header(
-                    "user".to_string(),
-                    HeaderValue::from_str(&self.config.username).unwrap()
-                )
-                .header(
-                    format!("{}", &self.config.auth_method).to_lowercase(),
-                    &self.config.secret
-                )
-                .header(
-                    "content-type".to_string(),
-                    "text/xml".to_string(),
-                )
-                .body(payload)
-                .send()
-                .await?;
-
-            let status = res.status().as_u16();
-
-            return Ok(status)
-        }
-
-        /// Takes the whole XML Document and removes all Entries that were removed
-        /// in the internal state.
-        /// Returns whether changes where made and the string of the new payload
-        fn delete_removed(&mut self, xml: String) -> Result<(bool, String), reqwest::Error> {
-            let mut modified = false;
-
-            let mut reader = Reader::from_str(&xml);
-            let mut writer = Writer::new(Cursor::new(Vec::new()));
-            
-            reader.trim_text(true);
-
-            let mut ffwd: bool = false;
-            let mut skip: BytesStart = BytesStart::new("");
-
-            loop {
-                match reader.read_event() {
-                    Ok(Event::Start(_)) if ffwd => {
-                        continue
-                    }
-                    Ok(Event::Start(e)) if e.name().as_ref() == b"entry" => {
-                        let mut write = true;
-                        e
-                            .attributes()
-                            .into_iter()
-                            .filter_map(|f| f.ok())
-                            .for_each(|val| {
-                                if val.key.local_name().as_ref() == b"id" {
-                                    if let Ok(v) = val.decode_and_unescape_value(&reader) {
-                                        if let Ok(v) = v.to_string().parse::<u16>() {
-                                            if let Some(pos) = self.elements.iter().position(|e| e.id == Some(v)) {
-                                                if pos < self.elements.len() && self.elements[pos].removed {
-                                                    self.elements.remove(pos);
-                                                    ffwd = true;
-                                                    skip = e.to_owned();
-                                                    modified = true;
-                                                    write = false;
-                                                };
-                                            };
-                                        };
-                                    };
-                                };
-                            });
-                        if write {
-                            writer.write_event(Event::Start(e.to_owned())).unwrap();
-                        }
-                    },
-                    Ok(Event::Start(e)) => {
-                        writer.write_event(Event::Start(e.to_owned())).unwrap();
-                    }
-                    Ok(Event::End(e)) if e == skip.to_end() => {
-                        ffwd = false;
-                        skip = BytesStart::new("");
-                    }
-                    Ok(Event::End(_)) if ffwd => {
-                        continue
-                    }
-                    Ok(Event::End(e)) => {
-                        writer.write_event(Event::End(e.to_owned())).unwrap();
-                    },
-                    Ok(Event::Eof) => break,
-                    Ok(_) if ffwd => {
-                        continue
-                    },
-                    Ok(e) => {
-                        writer.write_event(e).unwrap();
-                    }
-                    Err(_) => break,
-                    //_ => (),
-                }
-            }
-
-            Ok((
-                modified,
-                str::from_utf8(
-                    &writer.into_inner().into_inner()
-                )
-                .unwrap()
-                .to_string()
-            ))
-        }
-
-        /// Takes the whole XML Document and inserts Entries defined by the ids vec into it
-        fn insert_created_entries(&self, xml: String, ids: Vec<u16>) -> String {
-            let mut reader = Reader::from_str(&xml);
-            let mut writer = Writer::new(Cursor::new(Vec::new()));
-
-            loop {
-                match reader.read_event() {
-                    Ok(Event::Start(e)) if e.name().as_ref() == b"registry" => {
-                        writer.write_event(Event::Start(e.to_owned())).unwrap();
-                        self.elements
-                            .iter()
-                            .filter(|e| ids.iter().any(|i| Some(i) == e.id.as_ref()))
-                            .map(|e| {
-                                e.write(&mut writer).unwrap();
-                            }).count();
-                    },
-                    Ok(Event::Eof) => break,
-                    Ok(e) => {writer.write_event(e).unwrap();}
-                    Err(_) => break,
-                }
-            }
-
-            str::from_utf8(
-                &writer
-                .into_inner()
-                .into_inner()
-            ).unwrap().to_string()
-        }
-
-        pub fn is_synced(&self) -> bool {
-            self.synced
-        }
-        pub fn list(&self) {
-            let mut table = Table::new();
-            table.set_titles(row!["ID", "Title", "Description", "Due"]);
-            self.elements.iter().for_each(|e| {
-                table.add_row(e.to_row());
-            });
-            table.printstd();
-        }
-
-        /// Syncs changes, fetches new elements, deletes removed elements and pushes
-        pub async fn sync(&mut self) -> Result<(), reqwest::Error> {
-            println!("Fetching new Entries...");
-            let result = self.fetch().await?;
-
-            println!("Evaluating State...");
-            let (entries_deleted, mut answer) = self.delete_removed(result.to_string())?;
-
-            let fetched_registry: Registry = from_str(&answer).unwrap();
-
-            let mut existing_ids: Vec<u16> = fetched_registry.entries
-                .clone()
-                .into_iter()
-                .filter(|e| !e.removed)
-                .filter_map(|e| e.id)
-                .collect();
-
-            let (entries_added, new_ids) = self.add_missing_ids(&mut existing_ids);
-
-            if entries_added {
-                answer = self.insert_created_entries(answer, new_ids);
-            }
-
-            let needs_upload: bool = entries_deleted || entries_added;
-
-            if needs_upload {
-                println!("Uploading Changes...");
-                self.upload(answer.clone()).await?;
-            }
-
-
-            self.add_new_elements(fetched_registry.entries);
-
-            self.synced = true;
-            println!("Done!");
-            Ok(())
-        }
-
-        pub fn remove(&mut self, id: u16) -> bool {
-            let Some(posi) = self.elements.iter().position(|e| e.id == Some(id)) else {return false};
-            self.elements[posi].removed = true;
-            true
-        }
-    }
-
-    #[derive(PartialEq,)]
-    pub enum AppCommand {
-        List,
-        Sync,
-        Filter,
-        Edit,
-        Add,
-        Remove,
-        Help,
-        Quit,
-    }
-
-    impl ToString for AppCommand {
-        fn to_string(&self) -> String {
-            match self {
-                Self::List => "list",
-                Self::Sync => "sync",
-                Self::Filter => "filter",
-                Self::Edit => "edit",
-                Self::Add => "add",
-                Self::Remove => "remove",
-                Self::Help => "help",
-                Self::Quit => "quit",
-            }.to_string()
-        }
-    }
-
-    impl From<usize> for AppCommand {
-        fn from(s: usize) -> Self {
-            match s {
-                0 => Self::List,
-                1 => Self::Sync,
-                2 => Self::Filter,
-                3 => Self::Edit,
-                4 => Self::Add,
-                5 => Self::Remove,
-                6 => Self::Help,
-                7 => Self::Quit,
-                _ => Self::List
-            }
-        }
-    }
-
-    impl AppCommand {
-        pub fn get_command_list() -> Vec<AppCommand> {
-            vec![
-                Self::List,
-                Self::Sync,
-                Self::Filter,
-                Self::Edit,
-                Self::Add,
-                Self::Remove,
-                Self::Help,
-                Self::Quit
-            ]
-        }
-    }
-
-    #[derive(Serialize, Deserialize, PartialEq)]
-    pub enum AuthMethod {
-        Token,
-        Password
-    }
-
-    impl From<usize> for AuthMethod {
-        fn from(s: usize) -> AuthMethod {
-            match s {
-                0 => AuthMethod::Token,
-                1 => AuthMethod::Password,
-                _ => AuthMethod::Token,
-            }
-        }
-    }
-
-    impl fmt::Display for AuthMethod {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter) -> fmt::Result {
-            let displ: &str = match self {
-                AuthMethod::Token => "Token",
-                AuthMethod::Password => "Password",
-            };
-            write!(f, "{}", displ)
-        }
-    }
-
-    #[derive(Serialize, Deserialize, PartialEq)]
-    pub struct AppConfig {
-        pub server_address: String,
-        pub username: String,
-        pub secret: String,
-        pub auth_method: AuthMethod,
-    }
-
-    /// Construct a default AppConfig
-    impl ::std::default::Default for AppConfig {
-        fn default() -> Self {
-            Self {
-                server_address: "<THE ADDRESS OF THE WEBSERVER>".to_string(),
-                username: "<YOUR USERNAME>".to_string(),
-                secret: "<YOUR TOKEN / SECRET>".to_string(),
-                auth_method: AuthMethod::Token,
-            }
-        }
-    }
-
-    impl fmt::Display for AppConfig {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            write!(
-                f,
-                "Server: {}\nUsername: {}\nSecret: {}\nAuth Method: {}",
-                self.server_address, self.username, "*".repeat(self.secret.len()), self.auth_method
-            )
-        }
-    }
-
-    impl AppConfig {
-        /// Returns if the element is the same as the default options
-        pub(crate) fn is_default(&self) -> bool {
-            self == &Self::default()
-        }
-
-        /// Returns if the element is the same as the empty element
-        pub(crate) fn is_empty(&self) -> bool {
-            self == &Self::empty()
-        }
-
-        /// Returns a minimal element
-        pub(crate) fn empty() -> Self {
-            Self {
-                server_address: "".to_string(),
-                username: "".to_string(),
-                secret: "".to_string(),
-                auth_method: AuthMethod::Token,
-            }
-        }
-
-        pub(crate) fn new(server_address: String, username: String, secret: String, auth_method: AuthMethod) -> Self {
-            Self {
-                server_address,
-                username,
-                secret,
-                auth_method,
-            }
-        }
-    }
-}
 
 /// Read the app configuration
 fn obtain_app_config() -> Option<AppConfig> {
@@ -698,12 +80,15 @@ fn setup_config(prev_config: &AppConfig) -> Result<AppConfig, std::io::Error> {
 /// Helper with chrono that creates a timestamp that is *days* in the future
 fn chrono_date_helper(days: u64) -> Option<u32> {
     let now = chrono::offset::Local::now();
+    u32::try_from(if days != 0 {
         let tmrw = now.add(chrono::naive::Days::new(days));
-        let final_time = chrono::naive::NaiveDateTime::new(
+        chrono::naive::NaiveDateTime::new(
             tmrw.date_naive(),
             chrono::naive::NaiveTime::from_hms_opt(23, 59, 59).unwrap()
-        ).and_utc();
-        u32::try_from(final_time.timestamp()).ok()
+        ).and_utc()
+    } else {
+        now.naive_utc().and_utc()
+    }.timestamp()).ok()
 }
 
 /// Questions the user to input a datetime and returns the unix timestamp
@@ -737,7 +122,7 @@ fn get_datetime_from_user() -> Result<Option<u32>, std::io::Error> {
 fn filter_menu(state: &mut AppState) -> Result<(), std::io::Error> {
     let selection: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
         .with_prompt("Filter according to")
-        .items(&["due", "other..."])
+        .items(&["due", "keyword"])
         .default(0)
         .interact_on_opt(&Term::stderr())?.unwrap_or(0);
 
@@ -745,38 +130,51 @@ fn filter_menu(state: &mut AppState) -> Result<(), std::io::Error> {
     table.set_titles(row!["ID", "Title", "Description", "Due"]);
 
     match selection {
-        0 => {
+        0 => { // due
             let due_selection: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
-                .with_prompt("Filter due within")
-                .items(&["the next day", "upcoming week", "next 4 weeks", "custom"])
+                .with_prompt("Filter due")
+                .items(&["over", "the next day", "upcoming week", "next 4 weeks", "custom", "range"])
                 .default(0)
                 .interact_on_opt(&Term::stderr())?.unwrap_or(0);
-            let timestamp: u32;
+            let mut timestamp_start: u32 = 0;
+            let timestamp_end: u32;
             match due_selection {
-                0 => {
-                    timestamp = chrono_date_helper(1).unwrap();
+                0 => { // over
+                    timestamp_end = chrono_date_helper(0).unwrap();
+                }
+                1 => { // the next day
+                    timestamp_end = chrono_date_helper(1).unwrap();
                 },
-                1 => {
-                    timestamp = chrono_date_helper(7).unwrap();
+                2 => { // upcoming week
+                    timestamp_end = chrono_date_helper(7).unwrap();
                 },
-                2 => {
-                    timestamp = chrono_date_helper(28).unwrap();
+                3 => { // next 4 weeks
+                    timestamp_end = chrono_date_helper(28).unwrap();
                 },
-                3 => {
-                    timestamp = get_datetime_from_user()?.unwrap_or(u32::MAX);
+                4 => { // custom
+                    timestamp_end = get_datetime_from_user()?.unwrap_or(u32::MAX);
                 },
+                5 => { // range
+                    println!("Set lower limit");
+                    timestamp_start = get_datetime_from_user()?.unwrap_or(u32::MAX);
+                    println!("Set upper limit");
+                    timestamp_end = get_datetime_from_user()?.unwrap_or(u32::MAX);
+                }
                 _ => {return Ok(())},
             };
 
             state
                 .get_elements()
                 .iter()
-                .filter(|e| {e.get_timestamp().unwrap_or(u32::MAX) < timestamp})
+                .filter(|e| {
+                    let timestamp_element = e.get_timestamp().unwrap_or(u32::MAX);
+                    timestamp_element > timestamp_start && timestamp_element < timestamp_end
+                })
                 .for_each(|e| {
                     table.add_row(e.to_row());
                 });
         },
-        1 => {
+        1 => { // keyword
             let custom_filter: String = Input::new()
                 .with_prompt("Enter keyword")
                 .interact_text()?;
@@ -868,22 +266,69 @@ fn remove_menu(state: &mut AppState) -> Result<(), io::Error> {
     Ok(())
 }
 
+async fn boiling_menu(state: &mut AppState) -> Result<(), io::Error> {
+    println!("Entering Boiling Mode...");
+    println!("All chnages are live now!");
+
+    let commands = ["get by id", "exit"];
+    let mut last_index: usize = commands.len() - 1;
+
+    loop {
+        println!("===========================================================");
+        let selection: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
+            .with_prompt("@>")
+            .items(&commands)
+            .default(last_index)
+            .interact_on_opt(&Term::stderr())?.unwrap_or(0);
+        println!("===========================================================");
+        last_index = selection;
+        match selection {
+            0 => {
+                let input_id: String = Input::new()
+                    .with_prompt("Enter the ID of your post")
+                    .validate_with(|input: &String| {
+                        input
+                            .parse::<u16>()
+                            .is_ok()
+                            .then_some(())
+                            .ok_or("Invalid format")
+                    })
+                    .interact_text()?;
+                let output: String = state.live_get_by_id(
+                    input_id.parse::<u16>().unwrap()
+                ).await.unwrap_or("Network Communication Error!".to_string()); // TODO: FIXME: unwrap is inappropriate this may fail
+                println!("{}", output);
+            },
+            1 => {break},
+            _ => (),
+        }
+    }
+    println!("Returning to Normal Mode...");
+    Ok(())
+
+}
+
 /// Help Dialog (more a print but who cares)
 fn help_menu() {
     println!("This is the Freemind Command Line Client");
-    println!("You can perform different actions on your calendar and sync them");
-    println!("with the Freemind API");
+    println!("You can perform different actions on your calendar");
+    println!("Normally all changes you make are Local until you");
+    println!("explicitly sync them.");
+    println!("An exception to this is the boiling mode.");
+    println!("In boiling mode all operations are performed");
+    println!("live on the Server!");
 }
 
 /// Main Dialog
 async fn main_menu(config: AppConfig) -> Result<(), io::Error> {
     let mut last_index: usize = 0;
-    let mut state = AppState::new(config);
+    let mut state: AppState = AppState::new(config);
     let commands: Vec<AppCommand> = AppCommand::get_command_list();
+    
     loop {
         println!("===========================================================");
         let selection: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
-            .with_prompt(">")
+            .with_prompt(format!("{}>", state.modified_string()))
             .items(&commands)
             .default(last_index)
             .interact_on_opt(&Term::stderr())?.unwrap_or(0);
@@ -897,6 +342,7 @@ async fn main_menu(config: AppConfig) -> Result<(), io::Error> {
                 AppCommand::Edit => edit_menu(),
                 AppCommand::Add => add_menu(&mut state)?,
                 AppCommand::Remove => remove_menu(&mut state)?,
+                AppCommand::Boiling => boiling_menu(&mut state).await?,
                 AppCommand::Help => help_menu(),
                 AppCommand::Quit => break,
             }
