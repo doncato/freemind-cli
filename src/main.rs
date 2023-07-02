@@ -8,6 +8,7 @@ use std::fs;
 use std::io;
 use std::ops::Add;
 use std::path::PathBuf;
+use chrono::{TimeZone, Utc, LocalResult};
 use clap::{Arg, Command, ArgMatches, crate_authors, crate_description, crate_version, ArgAction};
 use dialoguer::{Input, Confirm, Password, FuzzySelect, Select, theme::ColorfulTheme, console::Term};
 use prettytable::Table;
@@ -120,6 +121,27 @@ fn get_datetime_from_user() -> Result<Option<u32>, std::io::Error> {
             }
 }
 
+fn get_element_id_from_user(state: &AppState) -> Result<Option<u16>, std::io::Error> {
+    let mut ids: Vec<String> = state
+        .get_ids(true)
+        .into_iter()
+        .map(|e| e.to_string())
+        .collect();
+    ids.push("Exit".to_string());
+    let last_element = ids.len() - 1;
+    let selection: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
+        .with_prompt("#")
+        .items(&ids)
+        .default(last_element)
+        .interact_on_opt(&Term::stderr())?.unwrap_or(0);
+
+    if selection == last_element {
+        Ok(None)
+    } else {
+        Ok(Some(ids[selection].parse::<u16>().unwrap()))
+    }
+}
+
 fn filter_menu(state: &mut AppState) -> Result<(), std::io::Error> {
     let selection: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
         .with_prompt("Filter according to")
@@ -197,8 +219,97 @@ fn filter_menu(state: &mut AppState) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-fn edit_menu() {
-    println!("The Edit Menu is currently not implemented");
+fn edit_menu(state: &mut AppState) -> Result<(), std::io::Error> {
+    state.list();
+    println!("Select the ID of the element to be edited:");
+
+    let id: Option<u16> = get_element_id_from_user(state)?;
+    
+    match id {
+        None => {return Ok(())},
+        _ => ()
+    };
+    
+    let element = state.get_element_by_id(id.unwrap());
+
+    match element {
+        None => {return Ok(())},
+        _ => ()
+    }
+
+    let element = element.unwrap();
+
+    let disp_due: String = match element.due() {
+        Some(due) => {
+            let due_timestamp: i64 = due.into();
+            let utc_due: String = match Utc.timestamp_opt(due_timestamp, 0) {
+                LocalResult::None => "None".to_string(),
+                LocalResult::Single(val) => val.to_rfc2822(),
+                LocalResult::Ambiguous(val, _) => val.to_rfc2822(),
+            };
+            utc_due
+        },
+        None => "None".to_string()
+    };
+
+    let title: String = Input::new()
+        .with_prompt("Title")
+        .with_initial_text(element.title())
+        .allow_empty(true)
+        .interact_text()?;
+
+    let description: String = Input::new()
+        .with_prompt("Description")
+        .with_initial_text(element.description())
+        .allow_empty(true)
+        .interact_text()?;
+
+    let selection_due = FuzzySelect::with_theme(&ColorfulTheme::default())
+        .with_prompt("Due Date")
+        .items(&[disp_due.as_ref(), "none", "tomorrow", "upcoming week", "custom"])
+        .default(0)
+        .interact_on_opt(&Term::stderr())?.unwrap_or(0);
+
+    let due: Option<u32> = match selection_due {
+        0 => {
+            element.due()
+        }, // Keep
+        1 => None, // None
+        2  => { // Tomorrow
+            chrono_date_helper(1)
+        },
+        3 => { // Next Week
+            chrono_date_helper(7)
+        },
+        4 => { // Custom
+            get_datetime_from_user()?
+        },
+        _ => None,
+    };
+
+    let tags: Vec<String> = Input::<String>::new()
+        .with_prompt("Enter Tags seperated by spaces (or leave empty)")
+        .allow_empty(true)
+        .with_initial_text(element.tags().join(" "))
+        .interact_text()?
+        .split(" ")
+        .map(|e| e.to_owned())
+        .collect::<Vec<String>>();
+
+    let new_element: AppElement = AppElement::new(id, title, description, due, tags);
+    println!("\nYou are about to change the element to the following values:\n\n{}\n", new_element);
+    if Confirm::new().with_prompt("Do you want to apply these changes?").interact()? {
+        element.modify(
+            new_element.title(),
+            new_element.description(),
+            new_element.due(),
+            new_element.tags()
+        );
+        state.unsynced();
+        return Ok(());
+    } else {
+        return Ok(());
+    }
 }
 
 /// Add Dialog
@@ -257,23 +368,14 @@ fn remove_menu(state: &mut AppState) -> Result<(), io::Error> {
     state.list();
     println!("Select the ID of the element to be deleted:");
 
-    let mut ids: Vec<String> = state.get_ids(true).into_iter().map(|e| e.to_string()).collect();
-    ids.push("Exit".to_string());
-    let last_element = ids.len() - 1;
-    let selection: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
-        .with_prompt("#")
-        .items(&ids)
-        .default(last_element)
-        .interact_on_opt(&Term::stderr())?.unwrap_or(0);
-
-    if selection == last_element {
-        return Ok(());
-    } else {
-        let Ok(num) = ids[selection].parse::<u16>() else { return Ok(()) };
-        if state.remove(num) {
-            state.unsynced();
-        };
-    }
+    match get_element_id_from_user(state)? {
+        Some(id) => {
+            if state.remove(id) {
+                state.unsynced();
+            };
+        },
+        None => {}
+    };
 
     Ok(())
 }
@@ -286,13 +388,14 @@ async fn boiling_menu(state: &mut AppState) -> Result<(), io::Error> {
     let mut last_index: usize = commands.len() - 1;
 
     loop {
-        println!("===========================================================");
+        let (width, _height) = termion::terminal_size().unwrap_or((60, 60));
+        println!("{}", "=".repeat(width as usize));
         let selection: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
             .with_prompt("@>")
             .items(&commands)
             .default(last_index)
             .interact_on_opt(&Term::stderr())?.unwrap_or(0);
-        println!("===========================================================");
+        println!("{}", "=".repeat(width as usize));
         last_index = selection;
         match selection {
             0 => {
@@ -338,20 +441,22 @@ async fn main_menu(config: AppConfig) -> Result<(), io::Error> {
     let commands: Vec<AppCommand> = AppCommand::get_command_list();
     
     loop {
-        println!("===========================================================");
+        let (width, _height) = termion::terminal_size().unwrap_or((60, 60));
+        
+        println!("{}", "=".repeat(width as usize));
         let selection: usize = FuzzySelect::with_theme(&ColorfulTheme::default())
             .with_prompt(format!("{}>", state.modified_string()))
             .items(&commands)
             .default(last_index)
             .interact_on_opt(&Term::stderr())?.unwrap_or(0);
-    
-        println!("===========================================================");
+        println!("{}", "=".repeat(width as usize));
+
         last_index = selection;
         match AppCommand::from(selection) {
                 AppCommand::List => state.list(),
                 AppCommand::Sync => state.sync().await.unwrap(),
                 AppCommand::Filter => filter_menu(&mut state)?,
-                AppCommand::Edit => edit_menu(),
+                AppCommand::Edit => edit_menu(&mut state)?,
                 AppCommand::Add => add_menu(&mut state)?,
                 AppCommand::Remove => remove_menu(&mut state)?,
                 AppCommand::Boiling => boiling_menu(&mut state).await?,

@@ -47,6 +47,8 @@ pub(crate) mod data_types {
         tags: Option<AppElementTags>,
         #[serde(skip)]
         removed: bool,
+        #[serde(skip)]
+        modified: bool,
     }
 
     impl PartialEq for AppElement {
@@ -98,6 +100,34 @@ pub(crate) mod data_types {
                 due,
                 tags: Some(AppElementTags::new(tags)),
                 removed: false,
+                modified: false,
+            }
+        }
+
+        pub fn modify(&mut self, title: String, description: String, due: Option<u32>, tags: Vec<String>) {
+            self.title = title;
+            self.description = description;
+            self.due = due;
+            self.tags = Some(AppElementTags::new(tags));
+            self.modified = true;
+        }
+
+        pub fn title(&self) -> String {
+            self.clone().title
+        }
+
+        pub fn description(&self) -> String {
+            self.clone().description
+        }
+
+        pub fn due(&self) -> Option<u32> {
+            self.due
+        }
+
+        pub fn tags(&self) -> Vec<String> {
+            match &self.tags {
+                Some(e) => {e.clone().tags},
+                None => {Vec::new()}
             }
         }
 
@@ -138,15 +168,18 @@ pub(crate) mod data_types {
 
         /// Writes the element using the given quick xml writer
         /// skips silently if the element does not have an ID
-        pub fn write<W: std::io::Write>(&self, writer: &mut Writer<W>) -> Result<(), quick_xml::Error> {
+        /// Skips the outer 'entry' tags if 'with_head' is false
+        pub fn write<W: std::io::Write>(&self, writer: &mut Writer<W>, with_head: bool) -> Result<(), quick_xml::Error> {
             if self.id.is_none() {
                 return Ok(());
             }
-            writer.write_event(Event::Start(
-                BytesStart::new("entry")
-                    .with_attributes([Attribute::from(("id", self.id.unwrap().to_string().as_str()))])
-                )
-            )?;
+            if with_head {
+                writer.write_event(Event::Start(
+                    BytesStart::new("entry")
+                        .with_attributes([Attribute::from(("id", self.id.unwrap().to_string().as_str()))])
+                    )
+                )?;
+            }
             writer.write_event(Event::Start(BytesStart::new("name")))?;
             writer.write_event(Event::Text(BytesText::new(&self.title)))?;
             writer.write_event(Event::End(BytesEnd::new("name")))?;
@@ -169,7 +202,9 @@ pub(crate) mod data_types {
             });
             writer.write_event(Event::End(BytesEnd::new("tags")))?;
             
-            writer.write_event(Event::End(BytesEnd::new("entry")))?;
+            if with_head {
+                writer.write_event(Event::End(BytesEnd::new("entry")))?;
+            }
 
             Ok(())
         }
@@ -197,6 +232,14 @@ pub(crate) mod data_types {
             if self.removed {
                 row![
                     Fri =>
+                    id,
+                    self.title,
+                    self.description,
+                    disp_due,
+                ]
+            } else if self.modified {
+                row![
+                    Fyi =>
                     id,
                     self.title,
                     self.description,
@@ -241,6 +284,13 @@ pub(crate) mod data_types {
 
         pub fn get_elements(&self) -> &Vec<AppElement> {
             return &self.elements;
+        }
+
+        pub fn get_element_by_id(&mut self, id: u16) -> Option<&mut AppElement> {
+            self
+                .elements
+                .iter_mut()
+                .find(|e| e.id == Some(id))
         }
 
         pub fn get_ids(&self, ignore_removed: bool) -> Vec<u16> {
@@ -351,6 +401,8 @@ pub(crate) mod data_types {
             })
         }
 
+        /// Generates IDs for all elements in the current state that don't already
+        /// have one. Needs a full list of existing IDs to avoid during generation
         fn add_missing_ids(&mut self, existing_ids: &mut Vec<u16>) -> (bool, Vec<u16>) {
             let mut new_ids: Vec<u16> = Vec::new();
             let count_after: usize = self.elements
@@ -411,7 +463,7 @@ pub(crate) mod data_types {
         /// Takes the whole XML Document and removes all Entries that were removed
         /// in the internal state.
         /// Returns whether changes where made and the string of the new payload
-        fn delete_removed(&mut self, xml: String) -> Result<(bool, String), reqwest::Error> {
+        fn delete_removed(&mut self, xml: String) -> Result<(bool, String), quick_xml::Error> {
             let mut modified = false;
 
             let mut reader = Reader::from_str(&xml);
@@ -438,7 +490,7 @@ pub(crate) mod data_types {
                                     if let Ok(v) = val.decode_and_unescape_value(&reader) {
                                         if let Ok(v) = v.to_string().parse::<u16>() {
                                             if let Some(pos) = self.elements.iter().position(|e| e.id == Some(v)) {
-                                                if pos < self.elements.len() && self.elements[pos].removed {
+                                                if self.elements[pos].removed {
                                                     self.elements.remove(pos);
                                                     ffwd = true;
                                                     skip = e.to_owned();
@@ -451,11 +503,11 @@ pub(crate) mod data_types {
                                 };
                             });
                         if write {
-                            writer.write_event(Event::Start(e.to_owned())).unwrap();
+                            writer.write_event(Event::Start(e.to_owned()))?;
                         }
                     },
                     Ok(Event::Start(e)) => {
-                        writer.write_event(Event::Start(e.to_owned())).unwrap();
+                        writer.write_event(Event::Start(e.to_owned()))?;
                     }
                     Ok(Event::End(e)) if e == skip.to_end() => {
                         ffwd = false;
@@ -465,14 +517,14 @@ pub(crate) mod data_types {
                         continue
                     }
                     Ok(Event::End(e)) => {
-                        writer.write_event(Event::End(e.to_owned())).unwrap();
+                        writer.write_event(Event::End(e.to_owned()))?;
                     },
                     Ok(Event::Eof) => break,
                     Ok(_) if ffwd => {
                         continue
                     },
                     Ok(e) => {
-                        writer.write_event(e).unwrap();
+                        writer.write_event(e)?;
                     }
                     Err(_) => break,
                     //_ => (),
@@ -502,7 +554,7 @@ pub(crate) mod data_types {
                             .iter()
                             .filter(|e| ids.iter().any(|i| Some(i) == e.id.as_ref()))
                             .map(|e| {
-                                e.write(&mut writer).unwrap();
+                                e.write(&mut writer, true).unwrap();
                             }).count();
                     },
                     Ok(Event::Eof) => break,
@@ -516,6 +568,91 @@ pub(crate) mod data_types {
                 .into_inner()
                 .into_inner()
             ).unwrap().to_string()
+        }
+
+        /// Takes the whole XML Document and edits Entries that are marked to be
+        /// in an edited state
+        fn edit_entries(&mut self, xml: String) -> Result<(bool, String), quick_xml::Error> {
+            let mut modified = false;
+
+            let mut reader = Reader::from_str(&xml);
+            let mut writer = Writer::new(Cursor::new(Vec::new()));
+
+            let mut change_this: bool = false;
+            let mut skip: BytesStart = BytesStart::new("");
+            let mut skip_subtag: BytesStart = BytesStart::new("");
+
+            loop {
+                match reader.read_event() {
+                    Ok(Event::Start(e)) if change_this => {
+                        match e.name().as_ref() {
+                            b"name" | b"description" | b"due" | b"tags" => {
+                                skip_subtag = e.to_owned();
+                            },
+                            _ => {
+                                if skip_subtag == BytesStart::new("") {
+                                    writer.write_event(Event::Start(e.to_owned()))?
+                                }
+                            }
+                        }
+
+
+                    },
+                    Ok(Event::Start(e)) if e.name().as_ref() == b"entry" => {
+                        let mut write: bool = true;
+                        e
+                            .attributes()
+                            .into_iter()
+                            .filter_map(|f| f.ok())
+                            .for_each(|val| {
+                                if val.key.local_name().as_ref() == b"id" {
+                                    if let Ok(v) = val.decode_and_unescape_value(&reader) {
+                                        if let Ok(v) = v.to_string().parse::<u16>() {
+                                            if let Some(element) = self.get_element_by_id(v) {
+                                                if element.modified {
+                                                    element.modified = false;
+                                                    write = false;
+                                                    modified = true;
+                                                    change_this = true;
+                                                    skip = e.to_owned();
+
+                                                    writer.write_event(Event::Start(e.to_owned())).unwrap();
+                                                    element.write(&mut writer, false).unwrap();
+                                                }
+                                            };
+                                        };
+                                    };
+                                };
+                            });
+                        if write {
+                            writer.write_event(Event::Start(e.to_owned()))?;        
+                        }
+                    },
+                    Ok(Event::End(e)) if e == skip_subtag.to_end() => {
+                        skip_subtag = BytesStart::new("");
+                    }
+                    Ok(Event::End(e)) if e == skip.to_end() => {
+                        change_this = false;
+                        skip = BytesStart::new("");
+                        writer.write_event(Event::End(e.to_owned()))?;
+                    },
+                    Ok(Event::Eof) => break,
+                    Ok(e) => if skip_subtag == BytesStart::new("") {
+                        writer.write_event(e)?;
+                    }
+                    Err(_) => break,
+                    //_ => (),
+                }
+            }
+
+            Ok((
+                modified,
+                str::from_utf8(
+                    &writer.into_inner().into_inner()
+                )
+                .unwrap()
+                .to_string()
+            ))
         }
 
         pub fn is_synced(&self) -> bool {
@@ -536,7 +673,13 @@ pub(crate) mod data_types {
             let result = self.fetch().await?;
 
             println!("Evaluating State...");
-            let (entries_deleted, mut answer) = self.delete_removed(result.to_string())?;
+
+            let (entries_deleted, answer) = self
+                .delete_removed(result.to_string())
+                .unwrap_or((false, result));
+
+            let (entries_modified, mut answer) = self.edit_entries(answer).unwrap();
+            //println!("{}", answer);
 
             let fetched_registry: Registry = from_str(&answer).unwrap();
 
@@ -553,7 +696,7 @@ pub(crate) mod data_types {
                 answer = self.insert_created_entries(answer, new_ids);
             }
 
-            let needs_upload: bool = entries_deleted || entries_added;
+            let needs_upload: bool = entries_deleted || entries_modified || entries_added;
 
             if needs_upload {
                 println!("Uploading Changes...");
