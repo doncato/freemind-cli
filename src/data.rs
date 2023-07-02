@@ -313,6 +313,25 @@ pub(crate) mod data_types {
             self.synced = false;
         }
 
+        pub fn sort_by_due(&mut self) {
+            self.elements.sort_by(|a, b| {
+                match a.due {
+                    Some(due_a) => {
+                        match b.due {
+                            Some(due_b) => {due_a.cmp(&due_b)},
+                            None => {due_a.cmp(&0)}
+                        }
+                    },
+                    None => {
+                        match b.due {
+                            Some(due_b) => {due_b.cmp(&0)},
+                            None => {0.cmp(&0)}
+                        }
+                    }
+                }
+            })
+        }
+
         /// Returns a string that supposes to indicate whether modifications
         /// have been made to the local state
         pub fn modified_string(&self) -> String {
@@ -705,6 +724,8 @@ pub(crate) mod data_types {
 
 
             self.add_new_elements(fetched_registry.entries);
+
+            self.sort_by_due();
 
             self.synced = true;
             println!("Done!");
