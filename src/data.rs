@@ -15,6 +15,27 @@ pub(crate) mod data_types {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct AppElementTags {
+        #[serde(rename = "tag")]
+        tags: Vec<String>,
+    }
+
+    impl AppElementTags {
+        pub fn new(tags: Vec<String>) -> Self {
+            Self {
+                tags
+            }
+        }
+
+        pub fn empty() -> Self {
+            Self {
+                tags: Vec::new(),
+            }
+        }
+    }
+
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename = "entry")]
     pub struct AppElement {
         #[serde(rename = "@id")]
@@ -23,6 +44,7 @@ pub(crate) mod data_types {
         title: String,
         description: String,
         due: Option<u32>,
+        tags: Option<AppElementTags>,
         #[serde(skip)]
         removed: bool,
     }
@@ -57,31 +79,42 @@ pub(crate) mod data_types {
             };
             write!(
                 f,
-                "ID: {}\nTitle: {}\nDescription: {}\nDue: {:#?}\n",
+                "ID: {}\nTitle: {}\nDescription: {}\nDue: {:#?}\nTags: {}\n",
                 id,
                 &self.title,
                 &self.description,
-                disp_due
+                disp_due,
+                &self.tags.clone().unwrap_or(AppElementTags::empty()).tags.join(" "),
             )
         }
     }
 
     impl AppElement {
-        pub fn new(id: Option<u16>, title: String, description: String, due: Option<u32>) -> Self{
+        pub fn new(id: Option<u16>, title: String, description: String, due: Option<u32>, tags: Vec<String>) -> Self {
             Self {
                 id,
                 title,
                 description,
                 due,
+                tags: Some(AppElementTags::new(tags)),
                 removed: false,
             }
         }
 
         /// A function that returns the title followed by the description
-        /// as a single string, this is designed for usage of searching and
-        /// filtering
+        /// followed by the tags as a single lowercase string, this is designed
+        /// for usage of searching and filtering
         pub fn get_text(&self) -> String {
-            return String::new() + &self.title + " " + &self.description;
+            return String::new() 
+                + &self.title
+                + " "
+                + &self.description
+                + " "
+                + &self.tags.clone()
+                    .unwrap_or(AppElementTags::empty())
+                    .tags
+                    .join(" ")
+                .to_lowercase();
         }
 
         /// Gets the timestamp
@@ -128,6 +161,14 @@ pub(crate) mod data_types {
                 writer.write_event(Event::End(BytesEnd::new("due")))?;
             }
 
+            writer.write_event(Event::Start(BytesStart::new("tags")))?;
+            self.tags.clone().unwrap_or(AppElementTags::empty()).tags.iter().for_each(|e| {
+                writer.write_event(Event::Start(BytesStart::new("tag"))).unwrap_or(());
+                writer.write_event(Event::Text(BytesText::new(&e))).unwrap_or(());
+                writer.write_event(Event::End(BytesEnd::new("tag"))).unwrap_or(());
+            });
+            writer.write_event(Event::End(BytesEnd::new("tags")))?;
+            
             writer.write_event(Event::End(BytesEnd::new("entry")))?;
 
             Ok(())
@@ -247,6 +288,7 @@ pub(crate) mod data_types {
             
             let xml: String = res.text().await?;
 
+            //println!("{}", xml);
             let mut reader = Reader::from_str(&xml);
             
             reader.trim_text(true);
@@ -264,6 +306,7 @@ pub(crate) mod data_types {
                         enabled = false;
                     },
                     Ok(Event::Start(e)) if enabled => {
+                        result.push_str("\n");
                         result.push_str(&" ".repeat(indentation));
                         result.push_str(str::from_utf8(e.name().as_ref()).unwrap_or(""));
                         result.push_str(": ");
@@ -275,7 +318,6 @@ pub(crate) mod data_types {
                         );
                     }
                     Ok(Event::End(_)) if enabled => {
-                        result.push_str("\n");
                         indentation -= 1;
                     }
                     Ok(Event::Eof) => break,

@@ -3,6 +3,7 @@ use crate::data::data_types::{AppState, AppConfig, AppCommand, AppElement, AuthM
 
 #[macro_use] extern crate prettytable;
 use confy;
+use std::env;
 use std::fs;
 use std::io;
 use std::ops::Add;
@@ -175,9 +176,10 @@ fn filter_menu(state: &mut AppState) -> Result<(), std::io::Error> {
                 });
         },
         1 => { // keyword
-            let custom_filter: String = Input::new()
-                .with_prompt("Enter keyword")
-                .interact_text()?;
+            let custom_filter: String = Input::<String>::new()
+                .with_prompt("Keyword")
+                .interact_text()?
+                .to_lowercase();
 
             state
                 .get_elements()
@@ -203,10 +205,12 @@ fn edit_menu() {
 fn add_menu(state: &mut AppState) -> Result<(), std::io::Error> {
     let title: String = Input::new()
         .with_prompt("Title")
+        .allow_empty(true)
         .interact_text()?;
 
     let description: String = Input::new()
         .with_prompt("Description")
+        .allow_empty(true)
         .interact_text()?;
 
     let selection_due = FuzzySelect::with_theme(&ColorfulTheme::default())
@@ -229,7 +233,15 @@ fn add_menu(state: &mut AppState) -> Result<(), std::io::Error> {
         _ => None,
     };
 
-    let element: AppElement = AppElement::new(None, title, description, due);
+    let tags: Vec<String> = Input::<String>::new()
+        .with_prompt("Enter Tags seperated by spaces (or leave empty)")
+        .allow_empty(true)
+        .interact_text()?
+        .split(" ")
+        .map(|e| e.to_owned())
+        .collect::<Vec<String>>();
+
+    let element: AppElement = AppElement::new(None, title, description, due, tags);
     println!("\nYou are about to create the following new element:\n\n{}\n", element);
     if Confirm::new().with_prompt("Do you want to create this element?").interact()? {
         state.push(Some(element));
@@ -285,7 +297,7 @@ async fn boiling_menu(state: &mut AppState) -> Result<(), io::Error> {
         match selection {
             0 => {
                 let input_id: String = Input::new()
-                    .with_prompt("Enter the ID of your post")
+                    .with_prompt("ID")
                     .validate_with(|input: &String| {
                         input
                             .parse::<u16>()
