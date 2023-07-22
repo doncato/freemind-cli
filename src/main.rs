@@ -462,6 +462,7 @@ async fn main_menu(config: AppConfig) -> Result<(), io::Error> {
                 AppCommand::Boiling => boiling_menu(&mut state).await?,
                 AppCommand::Help => help_menu(),
                 AppCommand::Quit => break,
+                _ => {println!("Not yet implemented")}
             }
     }
     if !state.is_synced() {

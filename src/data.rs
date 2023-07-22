@@ -741,29 +741,39 @@ pub(crate) mod data_types {
 
     #[derive(PartialEq,)]
     pub enum AppCommand {
-        List,
-        Sync,
-        Filter,
-        Edit,
-        Add,
-        Remove,
-        Boiling,
-        Help,
-        Quit,
+        Add,        // A
+        Boiling,    // B
+        Config,     // C
+        Direct,     // D
+        Edit,       // E
+        Filter,     // F
+                    // G
+        Help,       // H
+                    // I, J, K
+        List,       // L
+                    // M, N, O, P
+        Quit,       // Q
+        Remove,     // R
+        Sync,       // S
+                    // T, U, V, W, X, Y
+        None,
     }
 
     impl ToString for AppCommand {
         fn to_string(&self) -> String {
             match self {
-                Self::List => "list",
-                Self::Sync => "sync",
-                Self::Filter => "filter",
-                Self::Edit => "edit",
-                Self::Add => "add",
-                Self::Remove => "remove",
-                Self::Boiling => "boiling",
-                Self::Help => "help",
-                Self::Quit => "quit",
+                Self::Add       => "[a]dd",
+                Self::Boiling   => "[b]oiling",
+                Self::Config    => "[c]onfig",
+                Self::Direct    => "[d]irect",
+                Self::Edit      => "[e]dit",
+                Self::Filter    => "[f]ilter",
+                Self::Help      => "[h]elp",
+                Self::List      => "[l]ist",
+                Self::Quit      => "[q]uit",
+                Self::Remove    => "[r]emove",
+                Self::Sync      => "[s]ync",
+                Self::None      => "[n]one",
             }.to_string()
         }
     }
@@ -771,33 +781,49 @@ pub(crate) mod data_types {
     impl From<usize> for AppCommand {
         fn from(s: usize) -> Self {
             match s {
-                0 => Self::List,
-                1 => Self::Sync,
+                0 => Self::Sync,
+                1 => Self::List,
                 2 => Self::Filter,
                 3 => Self::Edit,
                 4 => Self::Add,
                 5 => Self::Remove,
-                6 => Self::Boiling,
-                7 => Self::Help,
-                8 => Self::Quit,
-                _ => Self::List
+                6 => Self::Direct,
+                7 => Self::Boiling,
+                8 => Self::Config,
+                9 => Self::Help,
+                10 => Self::Quit,
+                _ => Self::None,
             }
         }
     }
 
     impl AppCommand {
         pub fn get_command_list() -> Vec<AppCommand> {
+            let mut i: u8 = 0;
+            let mut result: Vec<AppCommand> = Vec::new();
+            loop {
+                let e: AppCommand = AppCommand::from(i as usize); 
+                if e == AppCommand::None {
+                    break;
+                }
+                result.push(e);
+                i += 1;
+            }
+            return result;
+            /*
             vec![
-                Self::List,
                 Self::Sync,
+                Self::List,
                 Self::Filter,
                 Self::Edit,
                 Self::Add,
                 Self::Remove,
                 Self::Boiling,
+                Self::Config,
                 Self::Help,
                 Self::Quit
             ]
+            */
         }
     }
 
