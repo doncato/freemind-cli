@@ -5,4 +5,4 @@
 - Rename:
     - Remove -> Delete
     - Boiling -> Raw
-    -> Direct -> Blitz
+    - Direct -> Blitz
