@@ -67,8 +67,8 @@ pub(crate) mod data_types {
                     let due_timestamp: i64 = due.into();
                     let utc_due: String = match Utc.timestamp_opt(due_timestamp, 0) {
                         LocalResult::None => "None".to_string(),
-                        LocalResult::Single(val) => val.to_rfc2822(),
-                        LocalResult::Ambiguous(val, _) => val.to_rfc2822(),
+                        LocalResult::Single(val) => val.with_timezone(&chrono::Local).to_rfc2822(),
+                        LocalResult::Ambiguous(val, _) => val.with_timezone(&chrono::Local).to_rfc2822(),
                     };
                     utc_due
                 },

@@ -84,13 +84,14 @@ fn chrono_date_helper(days: u64) -> Option<u32> {
     let now = chrono::offset::Local::now();
     u32::try_from(if days != 0 {
         let tmrw = now.add(chrono::naive::Days::new(days));
-        chrono::naive::NaiveDateTime::new(
-            tmrw.date_naive(),
-            chrono::naive::NaiveTime::from_hms_opt(23, 59, 59).unwrap()
-        ).and_utc()
+        chrono::DateTime::from_local(
+            chrono::naive::NaiveDateTime::new(
+                tmrw.date_naive(),
+                chrono::naive::NaiveTime::from_hms_opt(23, 59, 59).unwrap()),
+            now.offset().to_owned())
     } else {
-        now.naive_utc().and_utc()
-    }.timestamp()).ok()
+        now
+    }.naive_utc().and_utc().timestamp()).ok()
 }
 
 /// Questions the user to input a datetime and returns the unix timestamp
