@@ -185,7 +185,13 @@ fn filter_menu(state: &mut AppState) -> Result<(), std::io::Error> {
                     timestamp_end = chrono_date_helper(28).unwrap();
                 },
                 4 => { // custom
-                    timestamp_end = get_datetime_from_user()?.unwrap_or(u32::MAX);
+                    let timestamp_temp = get_datetime_from_user()?.unwrap_or(u32::MAX);
+                    if timestamp_temp < timestamp_start {
+                        timestamp_end = timestamp_start;
+                        timestamp_start = timestamp_temp;
+                    } else {
+                        timestamp_end = timestamp_temp;
+                    }
                 },
                 5 => { // range
                     println!("Set lower limit");
