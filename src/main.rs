@@ -6,7 +6,7 @@ use confy;
 use std::env;
 use std::fs;
 use std::io;
-use std::ops::Add;
+use std::ops::{Add, Sub};
 use std::path::PathBuf;
 use chrono::{TimeZone, Utc, LocalResult};
 use clap::{Arg, Command, ArgMatches, crate_authors, crate_description, crate_version, ArgAction};
@@ -80,10 +80,14 @@ fn setup_config(prev_config: &AppConfig) -> Result<AppConfig, std::io::Error> {
 }
 
 /// Helper with chrono that creates a timestamp that is *days* in the future
-fn chrono_date_helper(days: u64) -> Option<u32> {
+fn chrono_date_helper(days: i64) -> Option<u32> {
     let now = chrono::offset::Local::now();
     u32::try_from(if days != 0 {
-        let tmrw = now.add(chrono::naive::Days::new(days));
+        let tmrw = if let Ok(ut) = days.try_into() {
+            now.add(chrono::naive::Days::new(ut))
+        } else {
+            now.sub(chrono::naive::Days::new((-1*days).try_into().unwrap_or(0)))
+        };
         chrono::DateTime::from_local(
             chrono::naive::NaiveDateTime::new(
                 tmrw.date_naive(),
@@ -97,10 +101,12 @@ fn chrono_date_helper(days: u64) -> Option<u32> {
 /// Questions the user to input a datetime and returns the unix timestamp
 fn get_datetime_from_user() -> Result<Option<u32>, std::io::Error> {
     let entered_input: String = Input::new()
-                .with_prompt("Enter a number of days (e.g. '+1') or a full date with time (e.g. '04.06.23 19:00')")
+                .with_prompt("Enter a number of days (e.g. '+1', '-1') or a full date with time (e.g. '04.06.23 19:00')")
                 .validate_with(|input: &String| {
                     if input.starts_with("+") {
-                         input[1..].parse::<u64>().is_ok()
+                        input[1..].parse::<i64>().is_ok()
+                    } else if input.starts_with("-") {
+                        input[0..].parse::<i64>().is_ok()
                     } else {
                         chrono::naive::NaiveDateTime::parse_from_str(input, "%d.%m.%y %H:%M").is_ok()
                     }.then_some(()).ok_or("Invalid format")
@@ -108,7 +114,9 @@ fn get_datetime_from_user() -> Result<Option<u32>, std::io::Error> {
                 .interact_text()?;
 
             if entered_input.starts_with("+") {
-                Ok(chrono_date_helper(entered_input[1..].parse::<u64>().unwrap_or(0)))
+                Ok(chrono_date_helper(entered_input[1..].parse::<i64>().unwrap_or(0)))
+            } else if entered_input.starts_with("-") {
+                Ok(chrono_date_helper(entered_input[0..].parse::<i64>().unwrap_or(0)))
             } else {
                 let offset: String = chrono::Local::now().format("%z").to_string();
                 Ok(u32::try_from(
@@ -160,10 +168,11 @@ fn filter_menu(state: &mut AppState) -> Result<(), std::io::Error> {
                 .items(&["over", "the next day", "upcoming week", "next 4 weeks", "custom", "range"])
                 .default(0)
                 .interact_on_opt(&Term::stderr())?.unwrap_or(0);
-            let mut timestamp_start: u32 = 0;
+            let mut timestamp_start: u32 = chrono_date_helper(-1).unwrap(); // Last day 23:59
             let timestamp_end: u32;
             match due_selection {
                 0 => { // over
+                    timestamp_start = 0;
                     timestamp_end = chrono_date_helper(0).unwrap();
                 }
                 1 => { // the next day
