@@ -147,11 +147,6 @@ pub(crate) mod data_types {
                 .to_lowercase();
         }
 
-        /// Gets the timestamp
-        pub fn get_timestamp(&self) -> Option<u32> {
-            return self.due
-        }
-
         /// Generates a new ID for this element. The id will not be in existing ids
         /// Updates the self element and the existing ids
         /// Returns the new id

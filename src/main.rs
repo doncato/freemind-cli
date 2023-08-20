@@ -206,7 +206,7 @@ fn filter_menu(state: &mut AppState) -> Result<(), std::io::Error> {
                 .get_elements()
                 .iter()
                 .filter(|e| {
-                    let timestamp_element = e.get_timestamp().unwrap_or(u32::MAX);
+                    let timestamp_element = e.due().unwrap_or(u32::MAX);
                     timestamp_element > timestamp_start && timestamp_element < timestamp_end
                 })
                 .for_each(|e| {
